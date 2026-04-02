@@ -1,11 +1,36 @@
-__pycache__/
-*.pyc
-*.pyo
-*.egg-info/
-dist/
-build/
-.mypy_cache/
-.pytest_cache/
+# Binaries
+triton
+triton.exe
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build output
+/dist/
+/build/
+coverage.out
+
+# Test binary
+*.test
+
+# Go workspace
+go.work
+go.work.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
 *.log
 logs/
+
+# Environment
 .env
