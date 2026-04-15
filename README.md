@@ -13,12 +13,26 @@ A fast, dependency-light network reconnaissance CLI for security, SRE, and netwo
   <img width="420" src="https://github.com/prodrom3/ArgoNet/assets/7604466/6343df52-d5e6-4c1c-b1cf-3e904b694331" alt="triton">
 </p>
 
-## Contents
+## Table of Contents
 
-- **Start here**: [Why triton](#why-triton), [Quick Start](#quick-start), [Installation](#installation)
-- **Reference**: [Capabilities](#capabilities), [Usage](#usage), [Configuration](#configuration), [Output and Integration](#output-and-integration)
-- **Operate**: [Architecture](#architecture), [Operational Notes](#operational-notes), [Responsible Use](#responsible-use), [Security Policy](#security-policy)
-- **Project**: [Development](#development), [Support](#support), [License](#license)
+- **Start here**
+  - [Why triton](#why-triton)
+  - [Quick Start](#quick-start)
+  - [Installation](#installation)
+- **Reference**
+  - [Capabilities](#capabilities)
+  - [Usage](#usage)
+  - [Configuration](#configuration)
+  - [Output and Integration](#output-and-integration)
+- **Operate**
+  - [Architecture](#architecture)
+  - [Operational Notes](#operational-notes)
+  - [Responsible Use](#responsible-use)
+  - [Security Policy](#security-policy)
+- **Project**
+  - [Development](#development)
+  - [Support](#support)
+  - [License](#license)
 
 ## Why triton
 
