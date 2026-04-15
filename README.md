@@ -9,6 +9,8 @@
 
 A fast, dependency-light network reconnaissance CLI for security, SRE, and network engineering teams. triton consolidates geolocation, DNS, traceroute, port and TLS inspection, HTTP probing, latency measurement, and WHOIS into a single tool with structured output, concurrent target analysis, change detection, and pipeline-friendly exports.
 
+In Greek mythology, Triton is the messenger of the sea, a god who could calm or raise the waters and who knew every current and depth of the ocean. Just as Triton surveyed and commanded the vast network of seas, this tool surveys and maps the vast network of the internet, tracing routes across its depths, uncovering what lies beneath domain names, and revealing the geography and identity behind IP addresses. The name also nods to the trident, a tool of precision and reach, reflecting triton's ability to probe ports, inspect certificates, and query registries in a single sweep.
+
 <p align="center">
   <img width="420" src="https://github.com/prodrom3/ArgoNet/assets/7604466/6343df52-d5e6-4c1c-b1cf-3e904b694331" alt="triton">
 </p>
@@ -357,10 +359,3 @@ GitHub Actions runs on every push and PR:
 MIT. See [LICENSE](LICENSE).
 
 Created by [prodrom3](https://github.com/prodrom3) at [radamic](https://github.com/radamic).
-
-<details>
-<summary>Why "triton"?</summary>
-
-In Greek mythology, Triton is the messenger of the sea, a god who could calm or raise the waters and who knew every current and depth of the ocean. Just as Triton surveyed and commanded the vast network of seas, this tool surveys and maps the vast network of the internet, tracing routes across its depths, uncovering what lies beneath domain names, and revealing the geography and identity behind IP addresses. The name also nods to the trident, a tool of precision and reach, reflecting triton's ability to probe ports, inspect certificates, and query registries in a single sweep.
-
-</details>
