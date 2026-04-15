@@ -1,82 +1,145 @@
 # triton
 
 [![CI](https://github.com/prodrom3/triton/actions/workflows/ci.yml/badge.svg)](https://github.com/prodrom3/triton/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/prodrom3/triton/releases)
-[![Go 1.23+](https://img.shields.io/badge/go-1.23%2B-blue.svg)](https://go.dev/dl/)
+[![Release](https://img.shields.io/github/v/release/prodrom3/triton?color=blue)](https://github.com/prodrom3/triton/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/prodrom3/triton.svg)](https://pkg.go.dev/github.com/prodrom3/triton)
+[![Go Report Card](https://goreportcard.com/badge/github.com/prodrom3/triton)](https://goreportcard.com/report/github.com/prodrom3/triton)
+[![Go 1.23+](https://img.shields.io/badge/go-1.23%2B-00ADD8.svg)](https://go.dev/dl/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-triton is a network reconnaissance toolkit that combines geolocation, domain resolution, and network path analysis (traceroute) to provide comprehensive insights into network entities. It also supports DNS enumeration, port scanning, TLS inspection, WHOIS lookups, ASN identification, multiple concurrent targets, CIDR ranges, export to CSV/HTML/map, and change detection against previous scans.
+A fast, dependency-light network reconnaissance CLI for security, SRE, and network engineering teams. triton consolidates geolocation, DNS, traceroute, port and TLS inspection, HTTP probing, latency measurement, and WHOIS into a single tool with structured output, concurrent target analysis, change detection, and pipeline-friendly exports.
 
 <p align="center">
-  <img width="460" height="460" src="https://github.com/prodrom3/ArgoNet/assets/7604466/6343df52-d5e6-4c1c-b1cf-3e904b694331">
+  <img width="420" src="https://github.com/prodrom3/ArgoNet/assets/7604466/6343df52-d5e6-4c1c-b1cf-3e904b694331" alt="triton">
 </p>
 
-## Why "triton"?
+## Table of Contents
 
-In Greek mythology, Triton is the messenger of the sea - a god who could calm or raise the waters and who knew every current and depth of the ocean. Just as Triton surveyed and commanded the vast network of seas, this tool surveys and maps the vast network of the internet, tracing routes across its depths, uncovering what lies beneath domain names, and revealing the geography and identity behind IP addresses. The name also nods to the trident - a tool of precision and reach - reflecting triton's ability to probe ports, inspect certificates, and query registries in a single sweep.
+- [Why triton](#why-triton)
+- [Capabilities](#capabilities)
+- [Quick Start](#quick-start)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Output and Integration](#output-and-integration)
+- [Configuration](#configuration)
+- [Architecture](#architecture)
+- [Operational Notes](#operational-notes)
+- [Responsible Use](#responsible-use)
+- [Security Policy](#security-policy)
+- [Development](#development)
+- [Support](#support)
+- [License](#license)
 
-## Features
+## Why triton
 
-- **IP Geolocation** - City, region, country, coordinates via GeoLite2
-- **ASN Identification** - Autonomous System Number and organization via GeoLite2 ASN
-- **DNS Resolution** - A + AAAA records (IPv4 and IPv6)
-- **DNS Enumeration** - MX, TXT, NS, SOA, CNAME records (native Go resolver, concurrent)
-- **Traceroute** - System traceroute (default, no admin needed on Windows)
-- **Port Scanning** - TCP connect scan on common ports with banner grabbing (IPv4 and IPv6)
-- **HTTP Probing** - Status codes, redirects, server headers, and security header audit (HSTS, CSP, X-Frame-Options)
-- **TCP Ping** - Latency measurement with min/avg/max and packet loss statistics
-- **TLS Inspection** - Certificate issuer, expiry, SANs, self-signed detection
-- **WHOIS Lookup** - Organization, netname, CIDR from RIR databases (rate-limited with referral support)
-- **CIDR Support** - Expand `192.168.1.0/24` into individual targets (up to /16, capped at 65536 hosts)
-- **Multiple Targets** - Concurrent analysis with configurable workers and summary table
-- **Export** - CSV, self-contained HTML report, and Leaflet geo map (XSS-safe)
-- **Diff Mode** - Compare current results against a previous JSON scan
-- **JSON Output** - Structured output for scripting, `--output FILE` for saving
-- **Target Sources** - Positional args, `--targets FILE`, stdin piping, config file
-- **Config File** - `.triton.json` for saving default flag combinations
-- **Self-update** - `--update` to download the latest release from GitHub
-- **Graceful Shutdown** - Ctrl+C / SIGTERM cancels all in-flight operations via context propagation
-- **Logging** - Timestamped log files with automatic rotation, `--verbose` mode
-- **Cross-platform** - Builds for Linux, macOS, and Windows (amd64 and arm64)
+- **Single binary, zero runtime deps.** Static Go binary with one optional library dep (`geoip2-golang`). Drops into air-gapped runners, jump boxes, and minimal container images.
+- **Pipeline-first.** Structured JSON output, deterministic exit codes, `--quiet`, file-based targets, and stdin piping make it trivial to wire into CI, SOAR playbooks, and cron jobs.
+- **Concurrent and bounded.** Multi-target analysis with configurable workers; WHOIS rate limiting, TLS minimum version pinning, and context-based timeouts for predictable behavior under load.
+- **Change detection built in.** `--diff` against a previous JSON scan highlights new hosts, changed certificates, moved ASNs, and opened or closed ports.
+- **Cross-platform.** Prebuilt releases for Linux, macOS, and Windows on amd64 and arm64.
+
+## Capabilities
+
+**Identity and location**
+- IP geolocation (city, region, country, coordinates) via MaxMind GeoLite2
+- ASN and organization identification via GeoLite2 ASN
+- WHOIS lookup with ARIN referral support, encapsulated rate limiter (10/min)
+
+**Resolution and path**
+- DNS A / AAAA resolution with timeout
+- DNS record enumeration (MX, TXT, NS, SOA, CNAME) via native Go resolver, concurrent
+- System traceroute (no admin required on Windows), reverse DNS enrichment, timeout-hop capture
+
+**Surface inspection**
+- TCP connect port scan (IPv4 and IPv6), banner grabbing, 16 concurrent workers
+- TLS certificate inspection: issuer, subject, SANs, expiry, self-signed detection, protocol version, TLS 1.2 minimum pinned on all clients
+- HTTP probing: status codes, redirect chains, server fingerprint, security header audit (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy)
+- TCP ping latency (min / avg / max) with packet-loss statistics
+
+**Scale and workflow**
+- CIDR expansion with network / broadcast filtering (capped at 65,536 hosts)
+- Concurrent target analysis with configurable worker pool
+- Target sources: positional args, `--targets FILE`, stdin, config file
+- Config file: `.triton.json` in project or home directory
+- Change detection via `--diff` against previous JSON scans
+- Exports: structured JSON, CSV, self-contained HTML report, Leaflet geo map (all XSS-safe)
+- Graceful shutdown: SIGINT / SIGTERM cancel all in-flight probes via context propagation
+- Logging: slog multi-handler, timestamped files, automatic rotation (20 files), `--verbose` for probe timings
+- Self-update from signed GitHub releases via `--update`
+
+## Quick Start
+
+```bash
+# Install
+go install github.com/prodrom3/triton@latest
+
+# Download GeoLite2 databases (free MaxMind account required)
+#   GeoLite2-City.mmdb, GeoLite2-ASN.mmdb
+export GEOIP_DB_PATH=/path/to/GeoLite2-City.mmdb
+
+# Basic recon
+triton 8.8.8.8
+
+# Full sweep on a domain, JSON output
+triton --dns-all --ports default --tls --whois --http --json example.com
+
+# Scan a subnet, machine-readable
+triton --ports default --no-traceroute --json 192.168.1.0/24
+
+# Establish a baseline, then detect drift
+triton --output baseline.json example.com
+triton example.com --diff baseline.json
+```
 
 ## Installation
 
-### Prerequisites
+### Binary releases
 
-- Go >= 1.23
-- Git (for `go install`)
+Prebuilt binaries for Linux, macOS, and Windows (amd64 + arm64) are published on the [Releases](https://github.com/prodrom3/triton/releases) page. Download, verify the checksum, and place on `$PATH`.
 
-### GeoLite2 Databases
-
-Download from [MaxMind](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) (free account required):
-- **GeoLite2-City.mmdb** - geolocation (city, region, country, coordinates)
-- **GeoLite2-ASN.mmdb** - ASN identification (optional)
-
-Set the path via `--db`, the `GEOIP_DB_PATH` environment variable, or place the file in your home directory. On Windows, `%APPDATA%\GeoIP\` and `%PROGRAMDATA%\GeoIP\` are also searched.
-
-### Install
+### Go install
 
 ```bash
-# Install from source
 go install github.com/prodrom3/triton@latest
+```
 
-# Or clone and build (with version stamping)
+### From source
+
+```bash
 git clone https://github.com/prodrom3/triton.git
 cd triton
-make build
-
-# Or build manually
+make build                           # version-stamped build via ldflags
+# or:
 go build -ldflags "-X main.version=$(cat VERSION)" -o triton .
-
-# Run directly without installing
-go run . 8.8.8.8
 ```
+
+### Self-update
+
+```bash
+triton --update
+```
+
+Downloads the latest matching release asset from GitHub and replaces the running binary atomically.
+
+### GeoLite2 databases
+
+triton reads [MaxMind GeoLite2](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) databases (free account required). Both are optional but strongly recommended:
+
+- `GeoLite2-City.mmdb` - geolocation
+- `GeoLite2-ASN.mmdb` - ASN and organization
+
+Resolution order:
+1. `--db` / `--asn-db` CLI flags
+2. `GEOIP_DB_PATH` environment variable
+3. Home directory
+4. Windows: `%APPDATA%\GeoIP\` and `%PROGRAMDATA%\GeoIP\`
 
 ## Usage
 
 ```bash
 triton [OPTIONS] TARGET [TARGET ...]
 cat targets.txt | triton [OPTIONS]
+triton --targets hosts.txt [OPTIONS]
 ```
 
 ### Flags
@@ -99,11 +162,11 @@ cat targets.txt | triton [OPTIONS]
 | `--workers N` | Concurrent workers (default: 4) |
 | `--json` | JSON output |
 | `--csv FILE` | Export results to CSV |
-| `--html FILE` | Export results to HTML report |
-| `--map FILE` | Export geo map as HTML (Leaflet/OpenStreetMap) |
+| `--html FILE` | Export results to self-contained HTML report |
+| `--map FILE` | Export geo map as HTML (Leaflet / OpenStreetMap) |
 | `--diff FILE` | Compare results against a previous JSON file |
 | `--output FILE` | Save JSON results to file |
-| `--targets FILE` | Read targets from file (one per line, # comments) |
+| `--targets FILE` | Read targets from file (one per line, `#` comments) |
 | `-q, --quiet` | Suppress progress output |
 | `--verbose` | Verbose logging to stderr (shows probe timings) |
 | `--update` | Update triton to the latest release |
@@ -112,63 +175,74 @@ cat targets.txt | triton [OPTIONS]
 ### Examples
 
 ```bash
-# Basic recon
-triton 8.8.8.8
+# Recon baseline for an asset inventory
+triton --dns-all --tls --whois --ports default --http --json \
+       --output inventory.json --targets assets.txt
 
-# Full sweep on a domain
-triton --dns-all --ports default --tls --whois example.com
+# Quick subnet sweep, no traceroute, CSV for spreadsheets
+triton --ports default --no-traceroute --csv hosts.csv 10.0.0.0/24
 
-# Multiple targets concurrently
-triton 8.8.8.8 1.1.1.1 example.com
+# Certificate expiry audit
+triton --tls --no-traceroute --json --targets domains.txt \
+  | jq '.[] | {host: .target, not_after: .tls_cert.not_after}'
 
-# Scan a subnet
-triton --ports default --no-traceroute 192.168.1.0/24
+# Drift detection in CI
+triton --output current.json --targets assets.txt
+triton --diff baseline.json --targets assets.txt
 
-# DNS enumeration only
-triton --dns-all --no-traceroute example.com
+# Latency sample for a remote endpoint
+triton --ping --no-traceroute api.example.com
 
-# TLS certificate check
-triton --tls --no-traceroute example.com
+# Geo visualization
+triton --map map.html --targets vip_hosts.txt
 
-# Geolocation with ASN and coordinates
-triton --db city.mmdb --asn-db asn.mmdb --all-ips example.com
-
-# Pipe targets from a file
-cat targets.txt | triton --no-traceroute --json
-
-# Export to HTML report and geo map
-triton --html report.html --map map.html 8.8.8.8 1.1.1.1
-
-# Export to CSV
-triton --csv results.csv --no-traceroute example.com
-
-# HTTP probe - check status codes and security headers
-triton --http --ports default example.com
-
-# TCP ping latency
-triton --ping --no-traceroute 8.8.8.8
-
-# Read targets from a file
-triton --targets hosts.txt --no-traceroute --json
-
-# Track changes over time (self-contained, no shell redirection)
-triton --output baseline.json example.com
-# ... later ...
-triton example.com --diff baseline.json
-
-# Verbose mode (shows probe durations)
-triton --verbose 8.8.8.8
-
-# JSON output for scripting
-triton --json 8.8.8.8 | jq '.geolocation'
-
-# Self-update to latest release
-triton --update
+# HTTP security header audit
+triton --http --no-traceroute --json example.com | jq '.http_results[].security_headers'
 ```
 
-## Configuration File
+## Output and Integration
 
-Create a `.triton.json` in your project directory or home directory to set default options:
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | All targets analyzed without errors |
+| `1` | At least one target produced an error (DNS failure, unreachable, etc.) |
+| `2` | Invalid CLI usage or configuration |
+
+### JSON output
+
+`--json` or `--output FILE` produces a stable, typed JSON schema suitable for downstream processing. Every result object includes `target`, `timestamp`, and per-probe sub-objects (`geolocation`, `dns_records`, `traceroute`, `port_results`, `tls_cert`, `whois`, `http_results`, `ping`). Errors per probe are captured in-band rather than aborting the run.
+
+```bash
+triton --json 8.8.8.8 | jq '.geolocation.country'
+triton --json --targets assets.txt | jq '[.[] | select(.tls_cert.self_signed == true)]'
+```
+
+### CSV and HTML
+
+- `--csv FILE` flattens results into a tabular format for BI tools and spreadsheets.
+- `--html FILE` produces a self-contained, XSS-escaped HTML report (no external assets).
+- `--map FILE` produces a Leaflet geo map (OpenStreetMap tiles, `textContent`-safe rendering).
+
+### CI example (GitHub Actions)
+
+```yaml
+- name: Recon drift check
+  run: |
+    triton --targets assets.txt --json --output current.json
+    triton --targets assets.txt --diff baseline.json --output diff.json
+- uses: actions/upload-artifact@v4
+  with:
+    name: recon-report
+    path: |
+      current.json
+      diff.json
+```
+
+## Configuration
+
+Create `.triton.json` in the working directory or your home directory to set defaults. The working directory takes precedence. CLI flags override config values.
 
 ```json
 {
@@ -185,105 +259,104 @@ Create a `.triton.json` in your project directory or home directory to set defau
 }
 ```
 
-CLI flags always override config file values. The config file is loaded from the current directory first, then the home directory.
+## Architecture
 
-## Project Structure
+```mermaid
+flowchart LR
+    CLI[CLI / stdin / targets file / .triton.json]
+    CIDR[CIDR expansion + dedup]
+    PIPE[Pipeline orchestrator]
+    DNS[DNS resolution]
+    GEO[GeoIP lookup]
+    PROBES[Concurrent probes]
+    OUT[Renderer / JSON / CSV / HTML / Map]
+    DIFF[Diff engine]
+
+    CLI --> CIDR --> PIPE --> DNS --> GEO --> PROBES --> OUT
+    OUT -.previous JSON.-> DIFF --> OUT
+```
+
+Concurrent probes fan out per target: traceroute, WHOIS, DNS records, port scan, TLS, HTTP, ping. Each probe runs in its own goroutine under a shared `context.Context`, so `Ctrl+C` or `--timeout` cancels every pending network call cleanly.
+
+### Package layout
 
 ```
-triton/
-  main.go                       - Entry point (CLI, signal handling, orchestration)
-  main_test.go                  - CLI function tests (CIDR, ports, dedup)
-  go.mod                        - Go module definition
-  VERSION                       - Semver version string
-  Makefile                      - Build, test, lint, cover targets
-  .goreleaser.yml               - Cross-platform release config
-  internal/
-    models/
-      models.go                 - Data types (GeoResult, DnsRecords, PortResult, ...)
-      models_test.go            - Model serialization and HasErrors tests
-    geo/
-      geo.go                    - GeoIPReader (city + ASN, lock-free mmap reads)
-      cache.go                  - Bounded result cache (per-map RWMutex)
-      ip.go                     - IP parsing helper
-      cache_test.go             - Cache get/set/eviction/concurrency tests
-    network/
-      network.go                - DNS resolution, reverse DNS, IP validation
-      whois.go                  - WHOIS lookup with encapsulated rate limiter
-      network_test.go           - IP validation, WHOIS sanitization, rate limiter tests
-    dns/
-      dns.go                    - DNS record enumeration (native Go resolver, concurrent)
-      dns_test.go               - DNS query tests
-    scanner/
-      scanner.go                - Port scanning (IPv4/IPv6), banner grabbing, TLS inspection
-      scanner_test.go           - Scanner tests (local TCP listener, TLS, IPv6)
-    httpprobe/
-      httpprobe.go              - HTTP probing (status, redirects, server, security headers)
-    ping/
-      ping.go                   - TCP ping latency measurement
-    config/
-      config.go                 - .triton.json config file loader
-    tracer/
-      tracer.go                 - System traceroute (cross-platform, timeout hop capture)
-      tracer_test.go            - Traceroute output parsing tests (Linux + Windows)
-    pipeline/
-      pipeline.go               - Concurrent analysis with probe timing and context propagation
-      pipeline_test.go          - Pipeline tests with mock GeoLookup interface
-    output/
-      output.go                 - Renderer (ANSI colors, cached detection)
-      output_test.go            - Output formatting and rendering tests
-    export/
-      export.go                 - CSV, HTML report (XSS-escaped), Leaflet geo map
-      export_test.go            - Export and XSS escaping tests
-    diff/
-      diff.go                   - JSON result comparison (object, array, wrapped formats)
-      diff_test.go              - Diff detection tests
-    logging/
-      logging.go                - slog multi-handler, file rotation, configurable verbosity
-      logging_test.go           - Log rotation tests
-    updater/
-      updater.go                - Self-update from GitHub releases
-  .github/workflows/ci.yml     - GitHub Actions CI (test matrix + lint)
+main.go                      CLI, signal handling, orchestration
+internal/models              typed results + JSON serialization
+internal/config              .triton.json loader
+internal/geo                 GeoLite2 reader + bounded cache
+internal/network             DNS, reverse DNS, WHOIS, rate limiter
+internal/dns                 DNS record enumeration
+internal/scanner             TCP scan, banner grab, TLS inspection
+internal/httpprobe           HTTP probe + security header audit
+internal/ping                TCP ping latency
+internal/tracer              Cross-platform traceroute
+internal/pipeline            Per-target concurrent orchestration
+internal/output              Renderer (ANSI, cached detection)
+internal/export              CSV, HTML, Leaflet map (XSS-safe)
+internal/diff                JSON comparison, change detection
+internal/logging             slog multi-handler + rotation
+internal/updater             Self-update from GitHub releases
 ```
+
+## Operational Notes
+
+- **Defaults are conservative.** 4 workers, 30s timeout, traceroute on by default. Tune via `--workers` and `--timeout` for your environment.
+- **WHOIS is rate-limited** to 10 queries/minute to stay within RIR fair-use policies. The limiter is per-process; across parallel invocations, coordinate externally.
+- **GeoIP reads are lock-free** (mmap-backed). The result cache uses a per-map RWMutex and bounded FIFO eviction.
+- **IPv6 is first-class** across DNS, scanner, tracer, and HTTP probes (`net.JoinHostPort` throughout).
+- **TLS clients pin minimum version 1.2.** Certificate inspection falls back to an InsecureSkipVerify dial only to read self-signed chains; results flag `self_signed: true`.
+- **HTML and map exports are XSS-safe** via `html.EscapeString` and `textContent`-only DOM injection.
+- **CIDR is capped at /16** (65,536 hosts) to prevent accidental Internet-scale scans.
+
+## Responsible Use
+
+triton is intended for authorized network reconnaissance: asset inventory, attack surface management, blue-team drift detection, incident response, and lab/CTF use.
+
+**You are responsible for obtaining authorization before scanning any network or host you do not own.** Port scanning, banner grabbing, and aggressive traceroute may be considered intrusive or illegal in some jurisdictions. The authors accept no liability for misuse.
+
+## Security Policy
+
+Report security vulnerabilities privately by opening a [GitHub Security Advisory](https://github.com/prodrom3/triton/security/advisories/new). Please do not disclose publicly until a fix is available.
 
 ## Development
 
 ```bash
-# Build with version stamping
-make build
+make build     # version-stamped binary
+make test      # go test ./... -v
+make cover     # coverage report (HTML)
+make lint      # go vet + staticcheck
 
-# Run tests
-make test
-
-# Run tests with coverage
-make cover
-
-# Lint (go vet + staticcheck)
-make lint
-
-# Or use Go directly
-go test ./... -v
-go vet ./...
-go build -o triton .
 go run . 8.8.8.8
 ```
 
-## Dependencies
+### CI
 
-- [geoip2-golang](https://github.com/oschwald/geoip2-golang) v1.13.0 - MaxMind GeoLite2 database reader (required for geolocation)
-- Go standard library for everything else (networking, TLS, DNS, CLI, JSON, CSV, HTTP)
+GitHub Actions runs on every push and PR:
+- **test matrix**: `{ubuntu, macos, windows} x {go 1.23, go 1.24}`
+- **lint**: `go vet` + `staticcheck`
+- **release**: goreleaser builds linux/darwin/windows x amd64/arm64 on tag
 
-## Contributing
+### Dependencies
 
-Contributions to triton are welcome. Please fork the repository, make improvements, and submit pull requests.
-
-## Author
-
-Created by [prodrom3](https://github.com/prodrom3) / [radamic](https://github.com/radamic)
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+- [geoip2-golang](https://github.com/oschwald/geoip2-golang) - MaxMind GeoLite2 reader
+- Go standard library for all other functionality (networking, TLS, DNS, CLI, JSON, CSV, HTTP)
 
 ## Support
 
-If you encounter any problems or have suggestions, please open an issue on the GitHub repository.
+- **Issues and feature requests**: [GitHub Issues](https://github.com/prodrom3/triton/issues)
+- **Security vulnerabilities**: see [Security Policy](#security-policy)
+- **Contributions**: fork, branch, PR. Please include tests and run `make lint` before submitting.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+Created by [prodrom3](https://github.com/prodrom3) at [radamic](https://github.com/radamic).
+
+<details>
+<summary>Why "triton"?</summary>
+
+In Greek mythology, Triton is the messenger of the sea, a god who could calm or raise the waters and who knew every current and depth of the ocean. Just as Triton surveyed and commanded the vast network of seas, this tool surveys and maps the vast network of the internet, tracing routes across its depths, uncovering what lies beneath domain names, and revealing the geography and identity behind IP addresses. The name also nods to the trident, a tool of precision and reach, reflecting triton's ability to probe ports, inspect certificates, and query registries in a single sweep.
+
+</details>
