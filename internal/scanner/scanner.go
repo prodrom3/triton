@@ -183,10 +183,7 @@ func TLSCertInfo(ctx context.Context, host string, port int, timeout time.Durati
 	notAfter := cert.NotAfter.Format(time.RFC3339)
 	version := tlsVersionString(state.Version)
 
-	var sans []string
-	for _, name := range cert.DNSNames {
-		sans = append(sans, name)
-	}
+	sans := append([]string(nil), cert.DNSNames...)
 
 	return models.TlsCertResult{
 		Host:       host,
