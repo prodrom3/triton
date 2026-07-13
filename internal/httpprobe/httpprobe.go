@@ -29,7 +29,7 @@ func Probe(ctx context.Context, dialer *network.Dialer, host, ip string, port in
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true, // Intentional: reconnaissance tool inspects self-signed certs
+			InsecureSkipVerify: true, // #nosec G402 -- reconnaissance tool inspects self-signed and invalid certs by design
 			ServerName:         host,
 		},
 		DialContext: func(ctx context.Context, netw, addr string) (net.Conn, error) {

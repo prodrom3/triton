@@ -145,7 +145,7 @@ func tlsHandshake(ctx context.Context, dialer *network.Dialer, addr, host string
 	conn := tls.Client(raw, &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		ServerName:         host,
-		InsecureSkipVerify: insecure,
+		InsecureSkipVerify: insecure, // #nosec G402 -- recon tool falls back to an unverified handshake to read self-signed/invalid certs
 	})
 	if err := conn.HandshakeContext(ctx); err != nil {
 		raw.Close()

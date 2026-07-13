@@ -30,7 +30,7 @@ func Setup(enableFile bool, stderrLevel slog.Level) func() {
 	}
 
 	logDir := logDirectory()
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(logDir, 0750); err != nil {
 		slog.SetDefault(slog.New(stderrHandler))
 		return func() {}
 	}

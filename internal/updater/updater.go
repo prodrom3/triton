@@ -322,7 +322,8 @@ func replaceBinary(path string, data []byte) error {
 	}
 	tmp.Close()
 
-	// Make executable on Unix
+	// Make executable on Unix. 0755 is required because this file is the
+	// replacement binary and must remain executable.
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(tmpPath, 0755); err != nil {
 			os.Remove(tmpPath)

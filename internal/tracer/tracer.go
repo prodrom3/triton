@@ -88,6 +88,8 @@ func SystemTraceroute(ctx context.Context, target string, maxHops int, timeout t
 		time.Duration(maxHops)*probeTimeout+10*time.Second)
 	defer cancel()
 
+	// The only subprocess in triton. target is a validated IP or a resolved
+	// address (never raw user input), and every other argument is a fixed flag.
 	var cmd *exec.Cmd
 	if isWindows {
 		ms := int(probeTimeout.Milliseconds())
