@@ -1,0 +1,10 @@
+name: "triton CodeQL config"
+
+# go/disabled-certificate-check flags InsecureSkipVerify, which is intentional
+# and documented in triton: the TLS probe and HTTP probe deliberately complete
+# handshakes to self-signed and invalid endpoints to report their certificates.
+# gosec rule G402 remains active (with inline #nosec at the two intended sites),
+# so any unintended future use of InsecureSkipVerify is still caught by CI.
+query-filters:
+  - exclude:
+      id: go/disabled-certificate-check
