@@ -66,12 +66,14 @@ In Greek mythology, Triton is the messenger of the sea, a god who could calm or 
 - CIDR expansion with network / broadcast filtering (capped at 65,536 hosts)
 - Concurrent target analysis with configurable worker pool
 - Target sources: positional args, `--targets FILE`, stdin, config file
-- Config file: `.triton.json` in project or home directory
+- Config file: `.triton.json` in your home directory, or any file via `--config`
+- IP family selection (`-4` / `-6`), private-address SSRF guard (`--no-private`)
+- SOCKS5 and HTTP CONNECT proxy support (`--proxy`), global connection rate limit (`--rate`)
 - Change detection via `--diff` against previous JSON scans
-- Exports: structured JSON, CSV, self-contained HTML report, Leaflet geo map (all XSS-safe)
+- Exports: structured JSON, CSV, HTML report, Leaflet geo map (XSS-safe and formula-injection-safe)
 - Graceful shutdown: SIGINT / SIGTERM cancel all in-flight probes via context propagation
-- Logging: slog multi-handler, timestamped files, automatic rotation (20 files), `--verbose` for probe timings
-- Self-update from signed GitHub releases via `--update`
+- Opt-in logging (`--log`): slog multi-handler, timestamped files, automatic rotation (20 files)
+- Self-update from GitHub releases via `--update`, with checksum and signature verification
 
 ## Quick Start
 
@@ -160,12 +162,19 @@ triton --targets hosts.txt [OPTIONS]
 | `--tls` | Inspect TLS certificate on port 443 |
 | `--whois` | WHOIS lookup (rate-limited to 10/minute) |
 | `--http` | Probe HTTP on open web ports (status, headers, redirects) |
-| `--ping` | TCP ping latency measurement (3 probes on port 80) |
+| `--ping` | TCP ping latency measurement (3 probes) |
+| `--ping-port N` | TCP port used for `--ping` (default: 80) |
 | `--all-ips` | Geolocate all resolved IPs, not just the first |
 | `--no-traceroute` | Skip traceroute |
 | `--max-hops N` | Maximum traceroute hops (default: 20) |
 | `--timeout SECS` | Network operation timeout (default: 30) |
 | `--workers N` | Concurrent workers (default: 4) |
+| `--rate N` | Global rate limit in new connections per second (0 = unlimited) |
+| `--retries N` | Retry probe connections that time out, up to N times |
+| `--proxy URL` | Route TCP probes through a proxy (`socks5://host:port` or `http://host:port`) |
+| `--no-private` | Skip targets that resolve to private, loopback, or link-local addresses |
+| `-4` | Restrict resolution to IPv4 addresses |
+| `-6` | Restrict resolution to IPv6 addresses |
 | `--json` | JSON output |
 | `--csv FILE` | Export results to CSV |
 | `--html FILE` | Export results to self-contained HTML report |
@@ -173,9 +182,11 @@ triton --targets hosts.txt [OPTIONS]
 | `--diff FILE` | Compare results against a previous JSON file |
 | `--output FILE` | Save JSON results to file |
 | `--targets FILE` | Read targets from file (one per line, `#` comments) |
+| `--config FILE` | Load config from a specific file (default: `$HOME/.triton.json`) |
+| `--log` | Write a rotated log file to the platform state directory |
 | `-q, --quiet` | Suppress progress output |
 | `--verbose` | Verbose logging to stderr (shows probe timings) |
-| `--update` | Update triton to the latest release |
+| `--update` | Update triton to the latest release (verifies checksums) |
 | `-v, --version` | Show version and exit |
 
 ### Examples
@@ -248,7 +259,9 @@ triton --json --targets assets.txt | jq '[.[] | select(.tls_cert.self_signed == 
 
 ## Configuration
 
-Create `.triton.json` in the working directory or your home directory to set defaults. The working directory takes precedence. CLI flags override config values.
+Create `.triton.json` in your home directory to set defaults, or point `--config` at a specific file. CLI flags override config values.
+
+The current working directory is intentionally not searched for a config file: auto-loading a `.triton.json` from an untrusted directory could silently inject scan targets or redirect the GeoIP database path. Use `--config ./project.triton.json` to load a project-local file on purpose.
 
 ```json
 {
@@ -261,7 +274,13 @@ Create `.triton.json` in the working directory or your home directory to set def
   "whois": true,
   "http": true,
   "ping": true,
-  "ports": "22,80,443,8080"
+  "ping_port": 443,
+  "ports": "22,80,443,8080",
+  "rate": 50,
+  "retries": 1,
+  "proxy": "socks5://127.0.0.1:1080",
+  "no_private": true,
+  "log": false
 }
 ```
 
@@ -289,30 +308,36 @@ Concurrent probes fan out per target: traceroute, WHOIS, DNS records, port scan,
 ```
 main.go                      CLI, signal handling, orchestration
 internal/models              typed results + JSON serialization
-internal/config              .triton.json loader
-internal/geo                 GeoLite2 reader + bounded cache
-internal/network             DNS, reverse DNS, WHOIS, rate limiter
+internal/config              config file loader (home or --config)
+internal/geo                 GeoLite2 reader + bounded cache (geo, trace, WHOIS by CIDR)
+internal/network             DNS, reverse DNS, WHOIS, rate limiter, proxy dialer, SSRF guard
 internal/dns                 DNS record enumeration
 internal/scanner             TCP scan, banner grab, TLS inspection
 internal/httpprobe           HTTP probe + security header audit
 internal/ping                TCP ping latency
-internal/tracer              Cross-platform traceroute
+internal/tracer              Cross-platform traceroute (IPv4 and IPv6)
 internal/pipeline            Per-target concurrent orchestration
-internal/output              Renderer (ANSI, cached detection)
-internal/export              CSV, HTML, Leaflet map (XSS-safe)
+internal/output              Renderer (ANSI, cached detection, control-char sanitized)
+internal/export              CSV, HTML, Leaflet map (XSS-safe, formula-injection-safe)
 internal/diff                JSON comparison, change detection
 internal/logging             slog multi-handler + rotation
-internal/updater             Self-update from GitHub releases
+internal/updater             Self-update with checksum and signature verification
+scripts/keygen, scripts/sign release signing helpers
 ```
 
 ## Operational Notes
 
-- **Defaults are conservative.** 4 workers, 30s timeout, traceroute on by default. Tune via `--workers` and `--timeout` for your environment.
-- **WHOIS is rate-limited** to 10 queries/minute to stay within RIR fair-use policies. The limiter is per-process; across parallel invocations, coordinate externally.
+- **Defaults are conservative.** 4 workers, 30s timeout, traceroute on by default. Tune via `--workers`, `--timeout`, and `--rate` for your environment.
+- **WHOIS is rate-limited** to 10 queries/minute to stay within RIR fair-use policies. Results are cached by netblock (both CIDR and dash-separated ranges), so scanning many hosts in the same range reuses one lookup. The limiter is per-process; across parallel invocations, coordinate externally.
+- **Global rate limiting** is available via `--rate` (new connections per second) and applies to every TCP probe. `--retries` retries only connections that time out, never refused ports.
 - **GeoIP reads are lock-free** (mmap-backed). The result cache uses a per-map RWMutex and bounded FIFO eviction.
-- **IPv6 is first-class** across DNS, scanner, tracer, and HTTP probes (`net.JoinHostPort` throughout).
+- **IPv6 is first-class** across DNS, scanner, tracer, and HTTP probes (`net.JoinHostPort` throughout). Restrict a run to one family with `-4` or `-6`.
 - **TLS clients pin minimum version 1.2.** Certificate inspection falls back to an InsecureSkipVerify dial only to read self-signed chains; results flag `self_signed: true`.
-- **HTML and map exports are XSS-safe** via `html.EscapeString` and `textContent`-only DOM injection.
+- **Remote data is treated as untrusted.** Banners, WHOIS fields, TLS names, HTTP headers, DNS records, and reverse-DNS names are stripped of control characters before terminal output. HTML and map exports are XSS-safe via `html.EscapeString` and `textContent`-only DOM injection; the map export pins its CDN assets with Subresource Integrity. CSV exports neutralize spreadsheet formula injection.
+- **SSRF guard.** `--no-private` skips targets that resolve to private, loopback, or link-local addresses (including the cloud metadata endpoint), which is useful when target lists come from untrusted sources.
+- **Proxy support.** `--proxy` routes every TCP probe through a SOCKS5 or HTTP CONNECT proxy. Traceroute uses the system tool and does not route through the proxy.
+- **Updates are verified.** `--update` checks a SHA-256 manifest for every downloaded asset, verifies an ed25519 signature over that manifest when a signing key is configured, and refuses to downgrade.
+- **File logging is opt-in** (`--log`) and writes to the platform state directory, not next to the binary.
 - **CIDR is capped at /16** (65,536 hosts) to prevent accidental Internet-scale scans.
 
 ## Responsible Use
@@ -338,10 +363,13 @@ go run . 8.8.8.8
 
 ### CI
 
-GitHub Actions runs on every push and PR:
-- **test matrix**: `{ubuntu, macos, windows} x {go 1.23, go 1.24}`
-- **lint**: `go vet` + `staticcheck`
-- **release**: goreleaser builds linux/darwin/windows x amd64/arm64 on tag
+GitHub Actions runs on every push and PR with a least-privilege token:
+- **test matrix**: `{ubuntu, macos, windows} x {go 1.23, go 1.24}`, race detector on
+- **lint**: `go vet` + pinned `staticcheck`
+- **vuln**: `govulncheck` against the Go vulnerability database
+- **gosec**: static security analysis
+- **CodeQL**: scheduled and per-PR code scanning
+- **release**: on a `v*` tag, cross-compiles linux/darwin/windows x amd64/arm64, publishes a `SHA256SUMS` manifest, and signs it when a signing key is configured (see [docs/RELEASING.md](docs/RELEASING.md))
 
 ### Dependencies
 

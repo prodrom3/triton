@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/prodrom3/triton/internal/models"
+	"github.com/prodrom3/triton/internal/network"
 )
 
 // CommonPorts maps port numbers to service names.
@@ -35,11 +36,10 @@ func serviceName(port int) string {
 	return "unknown"
 }
 
-func scanSinglePort(ctx context.Context, ip string, port int, timeout time.Duration, grab bool, hostname string) models.PortResult {
+func scanSinglePort(ctx context.Context, dialer *network.Dialer, ip string, port int, timeout time.Duration, grab bool, hostname string) models.PortResult {
 	service := serviceName(port)
 	addr := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
 
-	dialer := net.Dialer{Timeout: timeout}
 	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return models.PortResult{Port: port, Open: false, Service: service}
@@ -88,7 +88,8 @@ func grabBanner(conn net.Conn, host string, port int, timeout time.Duration) *st
 // ScanPorts scans multiple TCP ports concurrently.
 // Only open ports are returned; closedCount gives the number of closed ports.
 // The hostname parameter is used for HTTP Host headers during banner grabbing.
-func ScanPorts(ctx context.Context, ip string, ports []int, timeout time.Duration, grabBanners bool, workers int, hostname string) (open []models.PortResult, closedCount int) {
+func ScanPorts(ctx context.Context, dialer *network.Dialer, ip string, ports []int, timeout time.Duration, grabBanners bool, workers int, hostname string) (open []models.PortResult, closedCount int) {
+	dialer = network.OrDefault(dialer, timeout)
 	if len(ports) == 0 {
 		ports = defaultPorts
 	}
@@ -109,7 +110,7 @@ func ScanPorts(ctx context.Context, ip string, ports []int, timeout time.Duratio
 		go func(p int) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			r := scanSinglePort(ctx, ip, p, timeout, grabBanners, hostname)
+			r := scanSinglePort(ctx, dialer, ip, p, timeout, grabBanners, hostname)
 			mu.Lock()
 			if r.Open {
 				open = append(open, r)
@@ -129,33 +130,51 @@ func ScanPorts(ctx context.Context, ip string, ports []int, timeout time.Duratio
 	return
 }
 
-// TLSCertInfo inspects the TLS certificate of a host.
-func TLSCertInfo(ctx context.Context, host string, port int, timeout time.Duration) models.TlsCertResult {
-	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-
-	dialer := &tls.Dialer{
-		NetDialer: &net.Dialer{Timeout: timeout},
-		Config:    &tls.Config{MinVersion: tls.VersionTLS12, ServerName: host},
+// tlsHandshake dials addr through the shared dialer and performs a TLS
+// handshake, returning the established *tls.Conn. The caller closes it.
+func tlsHandshake(ctx context.Context, dialer *network.Dialer, addr, host string, timeout time.Duration, insecure bool) (*tls.Conn, error) {
+	raw, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
 	}
-	rawConn, err := dialer.DialContext(ctx, "tcp", addr)
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = raw.SetDeadline(deadline)
+	} else if timeout > 0 {
+		_ = raw.SetDeadline(time.Now().Add(timeout))
+	}
+	conn := tls.Client(raw, &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		ServerName:         host,
+		InsecureSkipVerify: insecure, // #nosec G402 -- recon tool falls back to an unverified handshake to read self-signed/invalid certs
+	})
+	if err := conn.HandshakeContext(ctx); err != nil {
+		raw.Close()
+		return nil, err
+	}
+	_ = raw.SetDeadline(time.Time{})
+	return conn, nil
+}
+
+// TLSCertInfo inspects the TLS certificate of a host. The connection is made to
+// dialIP (the pre-resolved, guard-filtered address) while sniHost is used for
+// SNI and certificate name reporting. Separating the two ensures the TLS probe
+// connects to the same address that passed the SSRF and family filters, instead
+// of re-resolving the hostname at connect time.
+func TLSCertInfo(ctx context.Context, dialer *network.Dialer, dialIP, sniHost string, port int, timeout time.Duration) models.TlsCertResult {
+	dialer = network.OrDefault(dialer, timeout)
+	host := sniHost
+	addr := net.JoinHostPort(dialIP, fmt.Sprintf("%d", port))
+
+	tlsConn, err := tlsHandshake(ctx, dialer, addr, host, timeout, false)
 	if err != nil {
 		// Fallback without verification for self-signed/invalid certs (intentional for recon)
-		dialer2 := &tls.Dialer{
-			NetDialer: &net.Dialer{Timeout: timeout},
-			Config: &tls.Config{
-				MinVersion:         tls.VersionTLS12,
-				InsecureSkipVerify: true,
-				ServerName:         host,
-			},
-		}
-		rawConn2, err2 := dialer2.DialContext(ctx, "tcp", addr)
+		tlsConn2, err2 := tlsHandshake(ctx, dialer, addr, host, timeout, true)
 		if err2 != nil {
 			errStr := err2.Error()
 			return models.TlsCertResult{Host: host, Success: false, Error: &errStr}
 		}
-		defer rawConn2.Close()
-		tlsConn := rawConn2.(*tls.Conn)
-		version := tlsVersionString(tlsConn.ConnectionState().Version)
+		defer tlsConn2.Close()
+		version := tlsVersionString(tlsConn2.ConnectionState().Version)
 		issuer := "Unverified (self-signed or invalid)"
 		subject := "Unverified"
 		return models.TlsCertResult{
@@ -167,9 +186,8 @@ func TLSCertInfo(ctx context.Context, host string, port int, timeout time.Durati
 			Subject:    &subject,
 		}
 	}
-	defer rawConn.Close()
+	defer tlsConn.Close()
 
-	tlsConn := rawConn.(*tls.Conn)
 	state := tlsConn.ConnectionState()
 	if len(state.PeerCertificates) == 0 {
 		errStr := "no peer certificates"

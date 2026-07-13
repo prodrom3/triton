@@ -1,0 +1,16 @@
+version: 2
+updates:
+  # Keep Go module dependencies current so vulnerable versions are flagged early.
+  - package-ecosystem: gomod
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  # Keep GitHub Actions pinned versions current. Combined with pinning to major
+  # tags in the workflows, this surfaces action updates for review.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

@@ -63,6 +63,14 @@ type cliConfig struct {
 	mapFile      string
 	diffFile     string
 	targetsFile  string
+	configFile   string
+	log          bool
+	proxy        string
+	rate         float64
+	retries      int
+	noPrivate    bool
+	pingPort     int
+	family       int
 }
 
 func main() {
@@ -70,6 +78,8 @@ func main() {
 }
 
 func run() int {
+	updater.CleanupStale()
+
 	cfg := parseArgs()
 	if cfg == nil {
 		return 1
@@ -81,15 +91,29 @@ func run() int {
 	if cfg.verbose {
 		stderrLevel = slog.LevelInfo
 	}
-	cleanup := logging.Setup(!cfg.quiet, stderrLevel)
+	cleanup := logging.Setup(cfg.log, stderrLevel)
 	defer cleanup()
 
 	slog.Info("triton started", "targets", len(cfg.targets))
 	startTime := time.Now()
 
+	timeout := time.Duration(cfg.timeout * float64(time.Second))
+
+	var proxyCfg *network.ProxyConfig
+	if cfg.proxy != "" {
+		// Already validated in parseArgs; ignore the error here.
+		proxyCfg, _ = network.ParseProxy(cfg.proxy)
+	}
+	dialer := network.NewDialer(network.DialOptions{
+		Timeout: timeout,
+		Retries: cfg.retries,
+		Rate:    cfg.rate,
+		Proxy:   proxyCfg,
+	})
+
 	pipeCfg := pipeline.Config{
 		MaxHops:      cfg.maxHops,
-		Timeout:      time.Duration(cfg.timeout * float64(time.Second)),
+		Timeout:      timeout,
 		NoTraceroute: cfg.noTraceroute,
 		AllIPs:       cfg.allIPs,
 		DoWhois:      cfg.whois,
@@ -99,6 +123,10 @@ func run() int {
 		DoTLS:        cfg.tls,
 		DoHTTP:       cfg.doHTTP,
 		DoPing:       cfg.doPing,
+		PingPort:     cfg.pingPort,
+		NoPrivate:    cfg.noPrivate,
+		Family:       cfg.family,
+		Dialer:       dialer,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -287,6 +315,15 @@ func parseArgs() *cliConfig {
 	flag.StringVar(&cfg.mapFile, "map", "", "export geo map as HTML file")
 	flag.StringVar(&cfg.diffFile, "diff", "", "compare results against a previous JSON file")
 	flag.StringVar(&cfg.targetsFile, "targets", "", "read targets from file (one per line)")
+	flag.StringVar(&cfg.configFile, "config", "", "path to a config file (default: $HOME/.triton.json)")
+	flag.BoolVar(&cfg.log, "log", false, "write a rotated log file to the platform state directory")
+	flag.StringVar(&cfg.proxy, "proxy", "", "route TCP probes through a proxy (socks5://host:port or http://host:port)")
+	flag.Float64Var(&cfg.rate, "rate", 0, "global rate limit in new connections per second (0 = unlimited)")
+	flag.IntVar(&cfg.retries, "retries", 0, "retry probe connections that time out, up to N times")
+	flag.BoolVar(&cfg.noPrivate, "no-private", false, "skip targets that resolve to private, loopback, or link-local addresses")
+	flag.IntVar(&cfg.pingPort, "ping-port", 80, "TCP port used for --ping latency measurement")
+	ipv4Only := flag.Bool("4", false, "restrict resolution to IPv4 addresses")
+	ipv6Only := flag.Bool("6", false, "restrict resolution to IPv6 addresses")
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: triton [OPTIONS] TARGET [TARGET ...]\n\n")
@@ -310,32 +347,42 @@ func parseArgs() *cliConfig {
 		os.Exit(0)
 	}
 
-	// Apply config file defaults (CLI flags override)
-	applyConfigFile(cfg)
-
-	// Detect --ports flag presence vs value
-	portsSet := false
-	for _, arg := range os.Args[1:] {
-		if arg == "--ports" || arg == "-ports" {
-			portsSet = true
-			break
-		}
-		if strings.HasPrefix(arg, "--ports=") || strings.HasPrefix(arg, "-ports=") {
-			portsSet = true
-			break
-		}
+	if *ipv4Only && *ipv6Only {
+		fmt.Fprintln(os.Stderr, "Error: -4 and -6 are mutually exclusive")
+		return nil
+	}
+	switch {
+	case *ipv4Only:
+		cfg.family = 4
+	case *ipv6Only:
+		cfg.family = 6
 	}
 
-	if portsSet {
+	// Record which flags were explicitly set so config values apply only where
+	// the user did not pass a flag. This correctly distinguishes an explicit
+	// flag whose value equals the default (e.g. --rate 0, --ping-port 80) from
+	// an unset flag.
+	setFlags := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { setFlags[f.Name] = true })
+
+	// Apply config file defaults (CLI flags override).
+	if err := applyConfigFile(cfg, setFlags); err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
+		return nil
+	}
+
+	// --ports enables port scanning when set on the CLI (with or without a
+	// value) or supplied via the config file. Parse whichever port list applies.
+	if setFlags["ports"] {
 		cfg.doPorts = true
-		if cfg.ports != "" {
-			ports, err := parsePorts(cfg.ports)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-				return nil
-			}
-			cfg.portsParsed = ports
+	}
+	if cfg.doPorts && cfg.ports != "" {
+		ports, err := parsePorts(cfg.ports)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return nil
 		}
+		cfg.portsParsed = ports
 	}
 
 	// Collect targets: positional args + --targets file + stdin + config file
@@ -377,70 +424,120 @@ func parseArgs() *cliConfig {
 		fmt.Fprintln(os.Stderr, "Error: --workers must be at least 1")
 		return nil
 	}
+	if cfg.rate < 0 {
+		fmt.Fprintln(os.Stderr, "Error: --rate must not be negative")
+		return nil
+	}
+	if cfg.retries < 0 {
+		fmt.Fprintln(os.Stderr, "Error: --retries must not be negative")
+		return nil
+	}
+	if cfg.pingPort < 1 || cfg.pingPort > 65535 {
+		fmt.Fprintln(os.Stderr, "Error: --ping-port must be between 1 and 65535")
+		return nil
+	}
+	if cfg.proxy != "" {
+		if _, err := network.ParseProxy(cfg.proxy); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: invalid --proxy: %v\n", err)
+			return nil
+		}
+	}
 
 	return cfg
 }
 
-// applyConfigFile loads .triton.json and applies values where CLI flags were not set.
-func applyConfigFile(cfg *cliConfig) {
-	cf := config.Load()
+// applyConfigFile loads the config file and applies values where CLI flags were
+// not set. A missing per-user config is not an error; a failure to read an
+// explicitly requested --config file is.
+func applyConfigFile(cfg *cliConfig, setFlags map[string]bool) error {
+	cf, err := config.Load(cfg.configFile)
+	if err != nil {
+		return err
+	}
 	if cf == nil {
-		return
+		return nil
 	}
 
-	// Only apply config values if the CLI flag was not explicitly set.
-	// We detect this by checking if the value is still the zero/default.
-	if cfg.db == "" && cf.DB != "" {
+	// Apply config values only where the corresponding CLI flag was not set.
+	unset := func(names ...string) bool {
+		for _, n := range names {
+			if setFlags[n] {
+				return false
+			}
+		}
+		return true
+	}
+
+	if unset("db") && cf.DB != "" {
 		cfg.db = cf.DB
 	}
-	if cfg.asnDB == "" && cf.ASNDB != "" {
+	if unset("asn-db") && cf.ASNDB != "" {
 		cfg.asnDB = cf.ASNDB
 	}
-	if cfg.maxHops == 20 && cf.MaxHops != nil {
+	if unset("max-hops") && cf.MaxHops != nil {
 		cfg.maxHops = *cf.MaxHops
 	}
-	if cfg.timeout == 30.0 && cf.Timeout != nil {
+	if unset("timeout") && cf.Timeout != nil {
 		cfg.timeout = *cf.Timeout
 	}
-	if cfg.workers == 4 && cf.Workers != nil {
+	if unset("workers") && cf.Workers != nil {
 		cfg.workers = *cf.Workers
 	}
-	if cf.NoTraceroute != nil && *cf.NoTraceroute {
-		cfg.noTraceroute = true
+	if unset("no-traceroute") && cf.NoTraceroute != nil {
+		cfg.noTraceroute = *cf.NoTraceroute
 	}
-	if cf.Whois != nil && *cf.Whois {
-		cfg.whois = true
+	if unset("whois") && cf.Whois != nil {
+		cfg.whois = *cf.Whois
 	}
-	if cf.DnsAll != nil && *cf.DnsAll {
-		cfg.dnsAll = true
+	if unset("dns-all") && cf.DnsAll != nil {
+		cfg.dnsAll = *cf.DnsAll
 	}
-	if cf.TLS != nil && *cf.TLS {
-		cfg.tls = true
+	if unset("tls") && cf.TLS != nil {
+		cfg.tls = *cf.TLS
 	}
-	if cf.AllIPs != nil && *cf.AllIPs {
-		cfg.allIPs = true
+	if unset("all-ips") && cf.AllIPs != nil {
+		cfg.allIPs = *cf.AllIPs
 	}
-	if cf.HTTP != nil && *cf.HTTP {
-		cfg.doHTTP = true
+	if unset("http") && cf.HTTP != nil {
+		cfg.doHTTP = *cf.HTTP
 	}
-	if cf.Ping != nil && *cf.Ping {
-		cfg.doPing = true
+	if unset("ping") && cf.Ping != nil {
+		cfg.doPing = *cf.Ping
 	}
-	if cf.Verbose != nil && *cf.Verbose {
-		cfg.verbose = true
+	if unset("verbose") && cf.Verbose != nil {
+		cfg.verbose = *cf.Verbose
 	}
-	if cf.Quiet != nil && *cf.Quiet {
-		cfg.quiet = true
+	if unset("quiet", "q") && cf.Quiet != nil {
+		cfg.quiet = *cf.Quiet
 	}
-	if cf.Ports != "" && cfg.ports == "" {
+	if unset("ports") && cf.Ports != "" {
 		cfg.ports = cf.Ports
 		cfg.doPorts = true
+	}
+	if unset("log") && cf.Log != nil {
+		cfg.log = *cf.Log
+	}
+	if unset("proxy") && cf.Proxy != "" {
+		cfg.proxy = cf.Proxy
+	}
+	if unset("rate") && cf.Rate != nil {
+		cfg.rate = *cf.Rate
+	}
+	if unset("retries") && cf.Retries != nil {
+		cfg.retries = *cf.Retries
+	}
+	if unset("no-private") && cf.NoPrivate != nil {
+		cfg.noPrivate = *cf.NoPrivate
+	}
+	if unset("ping-port") && cf.PingPort != nil {
+		cfg.pingPort = *cf.PingPort
 	}
 
 	// Append config file targets (CLI targets take priority by being first)
 	if len(cf.Targets) > 0 {
 		cfg.targets = append(cfg.targets, cf.Targets...)
 	}
+	return nil
 }
 
 func readTargetsFile(path string) ([]string, error) {

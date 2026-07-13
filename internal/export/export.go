@@ -14,6 +14,32 @@ import (
 	"github.com/prodrom3/triton/internal/models"
 )
 
+// stripControl removes control characters (C0, DEL, C1) from untrusted strings
+// so exported files cannot carry terminal escape sequences.
+func stripControl(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// csvSafe neutralizes CSV formula injection. Spreadsheet applications treat a
+// cell beginning with '=', '+', '-', '@', or a control character as a formula;
+// prefixing such values with a single quote forces them to be read as text.
+func csvSafe(s string) string {
+	s = stripControl(s)
+	if s == "" {
+		return s
+	}
+	switch s[0] {
+	case '=', '+', '-', '@':
+		return "'" + s
+	}
+	return s
+}
+
 // ExportCSV exports results to a CSV file.
 func ExportCSV(results []models.AnalysisResult, path string) error {
 	f, err := os.Create(path)
@@ -37,10 +63,10 @@ func ExportCSV(results []models.AnalysisResult, path string) error {
 
 	for _, r := range results {
 		base := []string{
-			r.Target,
+			csvSafe(r.Target),
 			fmt.Sprintf("%t", r.IsIP),
-			derefStr(r.Error),
-			strings.Join(r.ResolvedIPs, "; "),
+			csvSafe(derefStr(r.Error)),
+			csvSafe(strings.Join(r.ResolvedIPs, "; ")),
 		}
 
 		if len(r.GeoResults) > 0 {
@@ -48,14 +74,14 @@ func ExportCSV(results []models.AnalysisResult, path string) error {
 				row := make([]string, len(base))
 				copy(row, base)
 				row = append(row,
-					g.IP,
-					g.City,
-					g.Country,
-					derefStr(g.Region),
+					csvSafe(g.IP),
+					csvSafe(g.City),
+					csvSafe(g.Country),
+					csvSafe(derefStr(g.Region)),
 					fmtOptFloat(g.Latitude),
 					fmtOptFloat(g.Longitude),
 					fmtOptInt(g.ASN),
-					derefStr(g.ASNOrg),
+					csvSafe(derefStr(g.ASNOrg)),
 				)
 				if err := w.Write(row); err != nil {
 					return err
@@ -73,9 +99,9 @@ func ExportCSV(results []models.AnalysisResult, path string) error {
 	return w.Error()
 }
 
-// esc escapes a string for safe HTML output.
+// esc escapes a string for safe HTML output, first removing control characters.
 func esc(s string) string {
-	return html.EscapeString(s)
+	return html.EscapeString(stripControl(s))
 }
 
 // ExportHTML exports results to a self-contained HTML report.
@@ -169,8 +195,12 @@ tr:hover { background: #f0f7ff; }
 </table></body></html>`, len(results), rows.String())
 }
 
-// ExportMap exports a geo map as a self-contained HTML file with Leaflet.
-// Marker data is passed as JSON, which handles escaping for JavaScript contexts.
+// ExportMap exports a geo map as a single HTML file. Marker data is embedded as
+// JSON (which handles JavaScript-context escaping) and rendered with textContent
+// only. The Leaflet library and map tiles load from public CDNs over TLS; the
+// library assets are pinned by version and guarded with Subresource Integrity
+// hashes, so a tampered CDN response is rejected by the browser. Viewing the map
+// therefore requires network access.
 func ExportMap(results []models.AnalysisResult, path string) error {
 	type marker struct {
 		Lat   float64 `json:"lat"`
@@ -202,8 +232,10 @@ func ExportMap(results []models.AnalysisResult, path string) error {
 	// Variable named 'leafletMap' to avoid shadowing the JS Map built-in.
 	htmlStr := fmt.Sprintf(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>triton Map</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJ8T7CfaFXCwcJ0T6EOtvsyh8fNbQ=" crossorigin="anonymous"></script>
 <style>body{margin:0}#map{height:100vh;width:100vw}</style>
 </head><body>
 <div id="map"></div>

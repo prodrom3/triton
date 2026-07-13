@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/prodrom3/triton/internal/models"
+	"github.com/prodrom3/triton/internal/network"
 )
 
 // TCPPing measures the TCP connection round-trip time to a host:port.
 // Uses a TCP SYN handshake (connect then close) which works without
 // elevated privileges on all platforms.
-func TCPPing(ctx context.Context, ip string, port int, count int, timeout time.Duration) models.PingResult {
+func TCPPing(ctx context.Context, dialer *network.Dialer, ip string, port int, count int, timeout time.Duration) models.PingResult {
+	dialer = network.OrDefault(dialer, timeout)
 	if count <= 0 {
 		count = 3
 	}
@@ -39,7 +41,6 @@ func TCPPing(ctx context.Context, ip string, port int, count int, timeout time.D
 		}
 
 		start := time.Now()
-		dialer := net.Dialer{Timeout: timeout}
 		conn, err := dialer.DialContext(ctx, "tcp", addr)
 		elapsed := time.Since(start)
 

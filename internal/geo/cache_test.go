@@ -149,3 +149,44 @@ func TestCacheIndependentLocks(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestWhoisCIDRCacheReuse(t *testing.T) {
+	c := NewCache()
+	cidr := "192.0.2.0/24"
+	c.SetWhois("192.0.2.10", models.WhoisResult{
+		IP: "192.0.2.10", Success: true, CIDR: &cidr,
+		Org: models.Ptr("Example Org"),
+	})
+	// A different address in the same block should hit the cache.
+	got, ok := c.GetWhois("192.0.2.200")
+	if !ok {
+		t.Fatal("expected CIDR cache hit for sibling address")
+	}
+	if got.Org == nil || *got.Org != "Example Org" {
+		t.Errorf("unexpected cached result: %+v", got)
+	}
+	// An address outside the block must miss.
+	if _, ok := c.GetWhois("198.51.100.1"); ok {
+		t.Error("address outside cached block should miss")
+	}
+}
+
+func TestWhoisRangeCacheDashNotation(t *testing.T) {
+	c := NewCache()
+	// ARIN NetRange style (dash-separated), which is not CIDR notation.
+	rng := "104.16.0.0 - 104.31.255.255"
+	c.SetWhois("104.16.0.1", models.WhoisResult{
+		IP: "104.16.0.1", Success: true, CIDR: &rng,
+		Org: models.Ptr("Cloudflare"),
+	})
+	got, ok := c.GetWhois("104.20.5.5")
+	if !ok {
+		t.Fatal("expected dash-range cache hit for sibling address")
+	}
+	if got.Org == nil || *got.Org != "Cloudflare" {
+		t.Errorf("unexpected cached result: %+v", got)
+	}
+	if _, ok := c.GetWhois("104.32.0.1"); ok {
+		t.Error("address just outside the range should miss")
+	}
+}

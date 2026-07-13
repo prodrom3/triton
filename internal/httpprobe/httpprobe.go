@@ -13,10 +13,12 @@ import (
 	"time"
 
 	"github.com/prodrom3/triton/internal/models"
+	"github.com/prodrom3/triton/internal/network"
 )
 
 // Probe sends an HTTP(S) request to the target and collects response metadata.
-func Probe(ctx context.Context, host, ip string, port int, timeout time.Duration) models.HTTPProbeResult {
+func Probe(ctx context.Context, dialer *network.Dialer, host, ip string, port int, timeout time.Duration) models.HTTPProbeResult {
+	dialer = network.OrDefault(dialer, timeout)
 	scheme := "http"
 	if port == 443 || port == 8443 {
 		scheme = "https"
@@ -27,12 +29,12 @@ func Probe(ctx context.Context, host, ip string, port int, timeout time.Duration
 	transport := &http.Transport{
 		TLSClientConfig: &tls.Config{
 			MinVersion:         tls.VersionTLS12,
-			InsecureSkipVerify: true, // Intentional: reconnaissance tool inspects self-signed certs
+			InsecureSkipVerify: true, // #nosec G402 -- reconnaissance tool inspects self-signed and invalid certs by design
 			ServerName:         host,
 		},
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			// Force connection to the resolved IP, not the hostname
-			dialer := &net.Dialer{Timeout: timeout}
+		DialContext: func(ctx context.Context, netw, addr string) (net.Conn, error) {
+			// Force connection to the resolved IP, not the hostname, and route
+			// through the shared dialer so proxy, rate limiting, and retries apply.
 			target := net.JoinHostPort(ip, fmt.Sprintf("%d", port))
 			return dialer.DialContext(ctx, "tcp", target)
 		},

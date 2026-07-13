@@ -5,6 +5,7 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"time"
@@ -37,19 +38,26 @@ type Config struct {
 	DoTLS        bool
 	DoHTTP       bool
 	DoPing       bool
+	PingPort     int
+	NoPrivate    bool
+	Family       int // 0 = any, 4 = IPv4 only, 6 = IPv6 only
+	Dialer       *network.Dialer
 }
 
 // DefaultConfig returns a Config with default values.
 func DefaultConfig() Config {
 	return Config{
-		MaxHops: 20,
-		Timeout: 30 * time.Second,
+		MaxHops:  20,
+		Timeout:  30 * time.Second,
+		PingPort: 80,
+		Dialer:   network.NewDialer(network.DialOptions{Timeout: 30 * time.Second}),
 	}
 }
 
 // AnalyzeTarget runs all enabled probes on a target and returns the composite result.
 // The provided context controls cancellation of all network operations.
 func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg Config, cache *geo.Cache, whoisLimiter *network.RateLimiter) models.AnalysisResult {
+	cfg.Dialer = network.OrDefault(cfg.Dialer, cfg.Timeout)
 	isIP := network.ValidateIP(target)
 	result := models.AnalysisResult{Target: target, IsIP: isIP}
 
@@ -61,19 +69,48 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 	defer resolveCancel()
 
 	if isIP {
+		if cfg.Family == 4 && !network.IsIPv4(target) {
+			result.Error = models.Ptr("Skipped: target is not an IPv4 address (-4)")
+			return result
+		}
+		if cfg.Family == 6 && network.IsIPv4(target) {
+			result.Error = models.Ptr("Skipped: target is not an IPv6 address (-6)")
+			return result
+		}
+		if cfg.NoPrivate && network.IsPrivate(target) {
+			result.Error = models.Ptr("Skipped: target is a private, loopback, or link-local address (--no-private)")
+			return result
+		}
 		traceIP = target
 		scanIP = target
 		geoIPs = []string{target}
 		result.ResolvedIPs = []string{target}
 	} else {
 		start := time.Now()
-		ips := network.ResolveDomain(resolveCtx, target)
+		rawIPs := network.ResolveDomain(resolveCtx, target)
+		ips := network.FilterByFamily(rawIPs, cfg.Family)
 		slog.Info("Probe complete", "probe", "dns", "target", target, "duration", time.Since(start).Round(time.Millisecond))
 		result.ResolvedIPs = ips
 		if len(ips) == 0 {
-			result.Error = models.Ptr("Could not resolve domain: " + target)
+			if len(rawIPs) > 0 && cfg.Family != 0 {
+				fam := "IPv4"
+				if cfg.Family == 6 {
+					fam = "IPv6"
+				}
+				result.Error = models.Ptr(fmt.Sprintf("No %s addresses for domain: %s", fam, target))
+			} else {
+				result.Error = models.Ptr("Could not resolve domain: " + target)
+			}
 			slog.Warn("DNS resolution failed", "target", target)
 			return result
+		}
+		if cfg.NoPrivate {
+			ips = filterPublic(ips)
+			result.ResolvedIPs = ips
+			if len(ips) == 0 {
+				result.Error = models.Ptr("Skipped: all resolved addresses are private (--no-private)")
+				return result
+			}
 		}
 		traceIP = ips[0]
 		scanIP = ips[0]
@@ -131,7 +168,7 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 				whoisCtx, cancel := context.WithTimeout(ctx, whoisTimeout)
 				defer cancel()
 				start := time.Now()
-				w := network.WhoisLookup(whoisCtx, scanIP, whoisTimeout, whoisLimiter)
+				w := network.WhoisLookup(whoisCtx, cfg.Dialer, scanIP, whoisTimeout, whoisLimiter)
 				slog.Info("Probe complete", "probe", "whois", "target", target, "duration", time.Since(start).Round(time.Millisecond))
 				mu.Lock()
 				result.Whois = &w
@@ -165,7 +202,7 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 				portTimeout = 3 * time.Second
 			}
 			start := time.Now()
-			open, closedCount := scanner.ScanPorts(ctx, scanIP, cfg.PortList, portTimeout, true, 16, hostname)
+			open, closedCount := scanner.ScanPorts(ctx, cfg.Dialer, scanIP, cfg.PortList, portTimeout, true, 16, hostname)
 			slog.Info("Probe complete", "probe", "ports", "target", target, "open", len(open), "closed", closedCount, "duration", time.Since(start).Round(time.Millisecond))
 			mu.Lock()
 			result.Ports = open
@@ -178,12 +215,15 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			tlsHost := target
+			// SNI uses the hostname for domains, but the dial always targets the
+			// resolved scanIP so the connection cannot bypass the SSRF and family
+			// filters by re-resolving the name at connect time.
+			sniHost := target
 			if isIP {
-				tlsHost = scanIP
+				sniHost = scanIP
 			}
 			start := time.Now()
-			t := scanner.TLSCertInfo(ctx, tlsHost, 443, cfg.Timeout)
+			t := scanner.TLSCertInfo(ctx, cfg.Dialer, scanIP, sniHost, 443, cfg.Timeout)
 			slog.Info("Probe complete", "probe", "tls", "target", target, "duration", time.Since(start).Round(time.Millisecond))
 			mu.Lock()
 			result.TLS = &t
@@ -196,7 +236,11 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 		go func() {
 			defer wg.Done()
 			start := time.Now()
-			p := ping.TCPPing(ctx, scanIP, 80, 3, cfg.Timeout)
+			pingPort := cfg.PingPort
+			if pingPort == 0 {
+				pingPort = 80
+			}
+			p := ping.TCPPing(ctx, cfg.Dialer, scanIP, pingPort, 3, cfg.Timeout)
 			slog.Info("Probe complete", "probe", "ping", "target", target, "duration", time.Since(start).Round(time.Millisecond))
 			mu.Lock()
 			result.Ping = &p
@@ -225,7 +269,7 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 				go func(p int) {
 					defer httpWg.Done()
 					start := time.Now()
-					hr := httpprobe.Probe(ctx, httpHost, scanIP, p, cfg.Timeout)
+					hr := httpprobe.Probe(ctx, cfg.Dialer, httpHost, scanIP, p, cfg.Timeout)
 					slog.Info("Probe complete", "probe", "http", "target", target, "port", p, "status", hr.StatusCode, "duration", time.Since(start).Round(time.Millisecond))
 					httpMu.Lock()
 					httpResults = append(httpResults, hr)
@@ -257,6 +301,19 @@ func findWebPorts(ports []models.PortResult) []int {
 		return []int{80, 443}
 	}
 	return result
+}
+
+// filterPublic drops private, loopback, and link-local addresses. It is used by
+// the --no-private SSRF guard so a hostname that resolves (or is rebound) to an
+// internal address is not probed.
+func filterPublic(ips []string) []string {
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if !network.IsPrivate(ip) {
+			out = append(out, ip)
+		}
+	}
+	return out
 }
 
 func runGeo(ips []string, reader GeoLookup, cache *geo.Cache) []models.GeoResult {

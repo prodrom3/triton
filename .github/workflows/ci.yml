@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+# Least-privilege default token for every job in this workflow.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -30,7 +34,7 @@ jobs:
         run: go build -ldflags "-X main.version=$(cat VERSION | tr -d '[:space:]')" -o triton .
 
       - name: Run tests
-        run: go test ./... -v -count=1
+        run: go test ./... -race -count=1
 
       - name: Verify --version flag
         shell: bash
@@ -54,5 +58,46 @@ jobs:
 
       - name: Static check
         run: |
-          go install honnef.co/go/tools/cmd/staticcheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@2025.1.1
           staticcheck ./...
+
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Use the latest patched Go so govulncheck sees the current standard
+      # library, matching the toolchain the release job ships with.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  gosec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      # Rules excluded below are structurally inherent to a reconnaissance CLI
+      # and carry no signal here: G104 (ignored cleanup errors), G115 (bounded
+      # int->byte conversions in the SOCKS5 codec), G204 (the single traceroute
+      # subprocess, invoked only with a validated address and fixed flags),
+      # G302 (the updater's replacement binary must stay executable), G304/G306
+      # (reading and writing operator-specified file paths and shareable
+      # reports), G703 (paths from operator-supplied flags). G402
+      # (InsecureSkipVerify) is kept active and justified inline with #nosec so
+      # any unintended future use is still caught.
+      - name: gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          gosec -exclude=G104,G115,G204,G302,G304,G306,G703 -exclude-dir=scripts ./...

@@ -34,7 +34,7 @@ func TestScanPortsOpenPort(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	ctx := context.Background()
-	open, closed := ScanPorts(ctx, "127.0.0.1", []int{port}, 2*time.Second, false, 4, "")
+	open, closed := ScanPorts(ctx, nil, "127.0.0.1", []int{port}, 2*time.Second, false, 4, "")
 
 	if len(open) != 1 {
 		t.Fatalf("expected 1 open port, got %d", len(open))
@@ -56,7 +56,7 @@ func TestScanPortsClosedPort(t *testing.T) {
 	ln.Close()
 
 	ctx := context.Background()
-	open, closed := ScanPorts(ctx, "127.0.0.1", []int{port}, 1*time.Second, false, 4, "")
+	open, closed := ScanPorts(ctx, nil, "127.0.0.1", []int{port}, 1*time.Second, false, 4, "")
 
 	if len(open) != 0 {
 		t.Errorf("expected 0 open ports, got %d", len(open))
@@ -85,7 +85,7 @@ func TestScanPortsBannerGrab(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	ctx := context.Background()
-	open, _ := ScanPorts(ctx, "127.0.0.1", []int{port}, 2*time.Second, true, 4, "")
+	open, _ := ScanPorts(ctx, nil, "127.0.0.1", []int{port}, 2*time.Second, true, 4, "")
 
 	if len(open) != 1 {
 		t.Fatalf("expected 1 open port, got %d", len(open))
@@ -102,7 +102,7 @@ func TestScanPortsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	open, closed := ScanPorts(ctx, "192.0.2.1", []int{80, 443}, 5*time.Second, false, 4, "")
+	open, closed := ScanPorts(ctx, nil, "192.0.2.1", []int{80, 443}, 5*time.Second, false, 4, "")
 	total := len(open) + closed
 	if total != 2 {
 		t.Errorf("expected 2 total results, got %d", total)
@@ -121,7 +121,7 @@ func TestScanPortsSorted(t *testing.T) {
 	port2 := ln2.Addr().(*net.TCPAddr).Port
 
 	ctx := context.Background()
-	open, _ := ScanPorts(ctx, "127.0.0.1", []int{port2, port1}, 2*time.Second, false, 4, "")
+	open, _ := ScanPorts(ctx, nil, "127.0.0.1", []int{port2, port1}, 2*time.Second, false, 4, "")
 
 	if len(open) != 2 {
 		t.Fatalf("expected 2 open, got %d", len(open))
@@ -172,7 +172,7 @@ func TestScanPortsIPv6(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	ctx := context.Background()
-	open, _ := ScanPorts(ctx, "::1", []int{port}, 2*time.Second, false, 4, "")
+	open, _ := ScanPorts(ctx, nil, "::1", []int{port}, 2*time.Second, false, 4, "")
 
 	if len(open) != 1 {
 		t.Errorf("expected 1 open port on IPv6, got %d", len(open))
@@ -231,7 +231,7 @@ func TestTLSCertInfoSelfSigned(t *testing.T) {
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	ctx := context.Background()
-	result := TLSCertInfo(ctx, "127.0.0.1", port, 5*time.Second)
+	result := TLSCertInfo(ctx, nil, "127.0.0.1", "127.0.0.1", port, 5*time.Second)
 
 	if !result.Success {
 		var errStr string
@@ -247,11 +247,71 @@ func TestTLSCertInfoSelfSigned(t *testing.T) {
 
 func TestTLSCertInfoConnectionRefused(t *testing.T) {
 	ctx := context.Background()
-	result := TLSCertInfo(ctx, "127.0.0.1", 1, 1*time.Second)
+	result := TLSCertInfo(ctx, nil, "127.0.0.1", "127.0.0.1", 1, 1*time.Second)
 	if result.Success {
 		t.Error("expected failure for refused connection")
 	}
 	if result.Error == nil {
 		t.Error("expected error message")
+	}
+}
+
+func startSelfSignedTLS(t *testing.T) int {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(2),
+		DNSNames:              []string{"localhost"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := tls.Certificate{Certificate: [][]byte{certDER}, PrivateKey: key}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				buf := make([]byte, 1)
+				c.Read(buf)
+				c.Close()
+			}(conn)
+		}
+	}()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// TestTLSCertInfoDialsIPNotSNI proves the TLS probe connects to the provided
+// dialIP and does not re-resolve the SNI host at connect time (the SSRF/family
+// guard bypass). The sniHost here does not resolve, so success can only happen
+// if the dial used dialIP.
+func TestTLSCertInfoDialsIPNotSNI(t *testing.T) {
+	port := startSelfSignedTLS(t)
+	result := TLSCertInfo(context.Background(), nil, "127.0.0.1", "nonexistent.invalid.example", port, 5*time.Second)
+	if !result.Success {
+		var e string
+		if result.Error != nil {
+			e = *result.Error
+		}
+		t.Fatalf("expected success dialing dialIP, got error: %s", e)
 	}
 }

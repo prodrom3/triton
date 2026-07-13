@@ -28,28 +28,42 @@ type File struct {
 	HTTP         *bool    `json:"http,omitempty"`
 	Verbose      *bool    `json:"verbose,omitempty"`
 	Quiet        *bool    `json:"quiet,omitempty"`
+	Log          *bool    `json:"log,omitempty"`
+	Proxy        string   `json:"proxy,omitempty"`
+	Rate         *float64 `json:"rate,omitempty"`
+	Retries      *int     `json:"retries,omitempty"`
+	NoPrivate    *bool    `json:"no_private,omitempty"`
+	PingPort     *int     `json:"ping_port,omitempty"`
 	Targets      []string `json:"targets,omitempty"`
 }
 
-// Load searches for a config file in the current directory and home directory.
-// Returns nil if no config file is found (not an error).
-func Load() *File {
-	candidates := []string{
-		".triton.json",
-	}
-
-	// Also check home directory
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".triton.json"))
-	}
-
-	for _, path := range candidates {
-		f, err := loadFile(path)
-		if err == nil {
-			return f
+// Load reads the configuration file. When explicitPath is non-empty, only that
+// file is loaded and a read/parse failure is returned as an error. Otherwise
+// the per-user config at $HOME/.triton.json is used if present.
+//
+// The current working directory is deliberately NOT searched: auto-loading a
+// .triton.json from an untrusted directory would let that directory silently
+// inject scan targets or redirect the GeoIP database path. Use --config to load
+// a project-local file explicitly.
+func Load(explicitPath string) (*File, error) {
+	if explicitPath != "" {
+		f, err := loadFile(explicitPath)
+		if err != nil {
+			return nil, err
 		}
+		return f, nil
 	}
-	return nil
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil
+	}
+	f, err := loadFile(filepath.Join(home, ".triton.json"))
+	if err != nil {
+		// Missing per-user config is not an error.
+		return nil, nil
+	}
+	return f, nil
 }
 
 func loadFile(path string) (*File, error) {

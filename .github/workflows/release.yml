@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to create the release and upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build release binaries with the latest patched Go so the shipped
+      # standard library carries current security fixes.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+
+      - name: Build, package, checksum, and sign
+        id: build
+        env:
+          # Optional: base64-encoded ed25519 private key (64-byte seed+public,
+          # as produced by scripts/keygen.go). When unset, releases are shipped
+          # with checksums only. See docs/RELEASING.md.
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          VER="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          platforms=(
+            "linux/amd64" "linux/arm64"
+            "darwin/amd64" "darwin/arm64"
+            "windows/amd64" "windows/arm64"
+          )
+          for p in "${platforms[@]}"; do
+            os="${p%/*}"; arch="${p#*/}"
+            bin="triton"; ext="tar.gz"
+            [ "$os" = "windows" ] && bin="triton.exe" && ext="zip"
+            echo "building $os/$arch"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
+              go build -trimpath -ldflags "-s -w -X main.version=${VER}" -o "$bin" .
+            asset="triton_${VER}_${os}_${arch}.${ext}"
+            if [ "$ext" = "zip" ]; then
+              zip -q "dist/${asset}" "$bin"
+            else
+              tar -czf "dist/${asset}" "$bin"
+            fi
+            rm -f "$bin"
+          done
+
+          ( cd dist && sha256sum triton_* > SHA256SUMS && cat SHA256SUMS )
+
+          if [ -n "${RELEASE_SIGNING_KEY:-}" ]; then
+            echo "signing SHA256SUMS"
+            go run ./scripts/sign -key-env RELEASE_SIGNING_KEY -in dist/SHA256SUMS -out dist/SHA256SUMS.sig
+          else
+            echo "RELEASE_SIGNING_KEY not set; publishing checksums without a signature"
+          fi
+
+      - name: Create release and upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*

@@ -6,7 +6,6 @@ package network
 import (
 	"context"
 	"fmt"
-	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -94,10 +93,9 @@ func (rl *RateLimiter) Reset() {
 	rl.timestamps = nil
 }
 
-func whoisQuery(ctx context.Context, server, query string, timeout time.Duration) (string, error) {
+func whoisQuery(ctx context.Context, dialer *Dialer, server, query string, timeout time.Duration) (string, error) {
 	safe := sanitizeWhoisQuery(query)
 
-	dialer := net.Dialer{Timeout: timeout}
 	conn, err := dialer.DialContext(ctx, "tcp", server+":43")
 	if err != nil {
 		return "", err
@@ -125,8 +123,10 @@ func whoisQuery(ctx context.Context, server, query string, timeout time.Duration
 }
 
 // WhoisLookup performs a WHOIS lookup for an IP address with rate limiting.
-// The provided context controls cancellation; the rate limiter controls throughput.
-func WhoisLookup(ctx context.Context, ip string, timeout time.Duration, limiter *RateLimiter) models.WhoisResult {
+// The provided context controls cancellation; the rate limiter controls
+// throughput; dialer controls proxying and connection rate limiting.
+func WhoisLookup(ctx context.Context, dialer *Dialer, ip string, timeout time.Duration, limiter *RateLimiter) models.WhoisResult {
+	dialer = OrDefault(dialer, timeout)
 	if !limiter.Allow() {
 		return models.WhoisResult{
 			IP:      ip,
@@ -135,7 +135,7 @@ func WhoisLookup(ctx context.Context, ip string, timeout time.Duration, limiter 
 		}
 	}
 
-	raw, err := whoisQuery(ctx, whoisServers["arin"], "n "+ip, timeout)
+	raw, err := whoisQuery(ctx, dialer, whoisServers["arin"], "n "+ip, timeout)
 	if err != nil {
 		return models.WhoisResult{
 			IP:      ip,
@@ -147,7 +147,7 @@ func WhoisLookup(ctx context.Context, ip string, timeout time.Duration, limiter 
 	if match := referralPattern.FindStringSubmatch(raw); match != nil {
 		referralServer := strings.ToLower(strings.Split(match[1], ":")[0])
 		if allowedWhoisServers[referralServer] && limiter.Allow() {
-			if referred, err := whoisQuery(ctx, referralServer, ip, timeout); err == nil {
+			if referred, err := whoisQuery(ctx, dialer, referralServer, ip, timeout); err == nil {
 				raw = referred
 			}
 		}

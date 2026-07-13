@@ -20,8 +20,10 @@ import (
 )
 
 var (
-	// Linux: matches responding hops like "  1  192.168.1.1  1.234 ms"
-	linuxHopRe = regexp.MustCompile(`^\s*(\d+)\s+([\d.]+)\s+([\d.]+)\s+ms`)
+	// Linux: matches responding hops like "  1  192.168.1.1  1.234 ms" and the
+	// IPv6 equivalent "  1  2001:db8::1  1.234 ms". The address group accepts
+	// hex and colons so IPv6 hops are captured, not silently dropped.
+	linuxHopRe = regexp.MustCompile(`^\s*(\d+)\s+([0-9a-fA-F:.]+)\s+([\d.]+)\s+ms`)
 	// Linux: matches timed-out hops like "  2  * * *"
 	linuxTimeoutRe = regexp.MustCompile(`^\s*(\d+)\s+\*`)
 	// Windows: matches responding hops
@@ -86,6 +88,8 @@ func SystemTraceroute(ctx context.Context, target string, maxHops int, timeout t
 		time.Duration(maxHops)*probeTimeout+10*time.Second)
 	defer cancel()
 
+	// The only subprocess in triton. target is a validated IP or a resolved
+	// address (never raw user input), and every other argument is a fixed flag.
 	var cmd *exec.Cmd
 	if isWindows {
 		ms := int(probeTimeout.Milliseconds())

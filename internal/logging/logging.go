@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -29,7 +30,7 @@ func Setup(enableFile bool, stderrLevel slog.Level) func() {
 	}
 
 	logDir := logDirectory()
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+	if err := os.MkdirAll(logDir, 0750); err != nil {
 		slog.SetDefault(slog.New(stderrHandler))
 		return func() {}
 	}
@@ -55,12 +56,30 @@ func Setup(enableFile bool, stderrLevel slog.Level) func() {
 	return func() { f.Close() }
 }
 
+// logDirectory returns a per-user, writable location for log files following
+// platform conventions, rather than writing next to the executable (which is
+// often read-only and leaks scan history into shared install locations).
 func logDirectory() string {
-	exe, err := os.Executable()
-	if err != nil {
-		return "logs"
+	const app = "triton"
+	switch runtime.GOOS {
+	case "windows":
+		if base := os.Getenv("LocalAppData"); base != "" {
+			return filepath.Join(base, app, "logs")
+		}
+	case "darwin":
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, "Library", "Logs", app)
+		}
+	default: // linux and other unix
+		if base := os.Getenv("XDG_STATE_HOME"); base != "" {
+			return filepath.Join(base, app, "logs")
+		}
+		if home, err := os.UserHomeDir(); err == nil {
+			return filepath.Join(home, ".local", "state", app, "logs")
+		}
 	}
-	return filepath.Join(filepath.Dir(exe), "logs")
+	// Last resort: a temp directory, never the executable's directory.
+	return filepath.Join(os.TempDir(), app+"-logs")
 }
 
 func rotateLogFiles(dir string, maxFiles int) {

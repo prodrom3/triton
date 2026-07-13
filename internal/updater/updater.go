@@ -6,6 +6,7 @@ package updater
 import (
 	"archive/tar"
 	"archive/zip"
+	"bytes"
 	"compress/gzip"
 	"encoding/json"
 	"fmt"
@@ -64,11 +65,15 @@ func CheckLatest() (string, error) {
 	return release.TagName, nil
 }
 
-// NeedsUpdate compares current version against the latest release tag.
+// NeedsUpdate reports whether latest is a strictly newer release than current.
+// Development builds ("dev") are never auto-updated. Using a numeric semver
+// comparison (rather than string inequality) prevents downgrade: a re-tagged
+// older release is not treated as an update.
 func NeedsUpdate(current, latest string) bool {
-	c := strings.TrimPrefix(current, "v")
-	l := strings.TrimPrefix(latest, "v")
-	return c != l && c != "dev"
+	if strings.TrimPrefix(current, "v") == "dev" {
+		return false
+	}
+	return compareSemver(latest, current) > 0
 }
 
 // Update downloads the latest release binary and replaces the current executable.
@@ -97,31 +102,57 @@ func Update(currentVersion string) error {
 	}
 
 	assetName := expectedAssetName(release.TagName)
-	var downloadURL string
-	for _, a := range release.Assets {
-		if a.Name == assetName {
-			downloadURL = a.BrowserDownloadURL
-			break
-		}
-	}
+	assets := indexAssets(release.Assets)
+
+	downloadURL := assets[assetName]
 	if downloadURL == "" {
 		return fmt.Errorf("no release asset found for %s/%s (expected %s)", runtime.GOOS, runtime.GOARCH, assetName)
+	}
+	sumsURL := assets[checksumsAsset]
+	if sumsURL == "" {
+		return fmt.Errorf("release is missing %s; refusing to install an unverifiable binary", checksumsAsset)
+	}
+
+	// Fetch and verify the checksum manifest before trusting any binary.
+	sumsData, err := download(client, sumsURL, 1*1024*1024)
+	if err != nil {
+		return fmt.Errorf("failed to download %s: %w", checksumsAsset, err)
+	}
+
+	if signatureConfigured() {
+		sigURL := assets[checksumsSigAsset]
+		if sigURL == "" {
+			return fmt.Errorf("release is missing %s; refusing to install without a valid signature", checksumsSigAsset)
+		}
+		sigData, err := download(client, sigURL, 64*1024)
+		if err != nil {
+			return fmt.Errorf("failed to download %s: %w", checksumsSigAsset, err)
+		}
+		if err := verifyChecksumsSignature(sumsData, sigData); err != nil {
+			return fmt.Errorf("release signature verification failed: %w", err)
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "Warning: release signature verification is not configured; verifying checksum only.")
+	}
+
+	wantSum, err := checksumFor(sumsData, assetName)
+	if err != nil {
+		return fmt.Errorf("checksum manifest error: %w", err)
 	}
 
 	fmt.Printf("Downloading %s ...\n", assetName)
 
-	archiveResp, err := client.Get(downloadURL)
+	archiveData, err := download(client, downloadURL, 100*1024*1024)
 	if err != nil {
 		return fmt.Errorf("failed to download release: %w", err)
 	}
-	defer archiveResp.Body.Close()
 
-	if archiveResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download returned status %d", archiveResp.StatusCode)
+	if err := verifyAsset(archiveData, wantSum); err != nil {
+		return fmt.Errorf("downloaded asset failed verification: %w", err)
 	}
 
-	// Extract the binary from the archive
-	binaryData, err := extractBinary(archiveResp.Body, assetName)
+	// Extract the binary from the verified archive.
+	binaryData, err := extractBinary(bytes.NewReader(archiveData), assetName)
 	if err != nil {
 		return fmt.Errorf("failed to extract binary: %w", err)
 	}
@@ -142,6 +173,33 @@ func Update(currentVersion string) error {
 
 	fmt.Printf("Updated triton %s -> %s\n", currentVersion, release.TagName)
 	return nil
+}
+
+// indexAssets maps release asset names to their download URLs.
+func indexAssets(assets []ghAsset) map[string]string {
+	m := make(map[string]string, len(assets))
+	for _, a := range assets {
+		m[a.Name] = a.BrowserDownloadURL
+	}
+	return m
+}
+
+// download fetches a URL into memory, capping the read at maxBytes to bound
+// memory use against oversized or malicious responses.
+func download(client *http.Client, url string, maxBytes int64) ([]byte, error) {
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("returned status %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	if err != nil {
+		return nil, err
+	}
+	return data, nil
 }
 
 func expectedAssetName(tag string) string {
@@ -184,11 +242,7 @@ func extractFromTarGz(r io.Reader, binName string) ([]byte, error) {
 			return nil, fmt.Errorf("tar error: %w", err)
 		}
 		if filepath.Base(header.Name) == binName && header.Typeflag == tar.TypeReg {
-			data, err := io.ReadAll(io.LimitReader(tr, 100*1024*1024)) // 100MB cap
-			if err != nil {
-				return nil, err
-			}
-			return data, nil
+			return readCapped(tr, maxBinarySize)
 		}
 	}
 	return nil, fmt.Errorf("binary %q not found in archive", binName)
@@ -224,10 +278,27 @@ func extractFromZip(r io.Reader, binName string) ([]byte, error) {
 				return nil, err
 			}
 			defer rc.Close()
-			return io.ReadAll(rc)
+			return readCapped(rc, maxBinarySize)
 		}
 	}
 	return nil, fmt.Errorf("binary %q not found in archive", binName)
+}
+
+// maxBinarySize bounds the decompressed size of an extracted binary, both to
+// limit memory against a decompression bomb and to detect truncation.
+const maxBinarySize = 100 * 1024 * 1024
+
+// readCapped reads all of r but fails if the content exceeds max, rather than
+// silently truncating (which would install a corrupt binary).
+func readCapped(r io.Reader, max int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("extracted binary exceeds %d bytes; refusing to install a truncated file", max)
+	}
+	return data, nil
 }
 
 // replaceBinary atomically replaces the executable at path.
@@ -251,7 +322,8 @@ func replaceBinary(path string, data []byte) error {
 	}
 	tmp.Close()
 
-	// Make executable on Unix
+	// Make executable on Unix. 0755 is required because this file is the
+	// replacement binary and must remain executable.
 	if runtime.GOOS != "windows" {
 		if err := os.Chmod(tmpPath, 0755); err != nil {
 			os.Remove(tmpPath)
@@ -276,4 +348,21 @@ func replaceBinary(path string, data []byte) error {
 	}
 
 	return nil
+}
+
+// CleanupStale removes leftover files from a previous update. On Windows the
+// running binary is renamed to "<exe>.old" during an update and cannot be
+// deleted until the process exits, so this best-effort cleanup runs at startup.
+func CleanupStale() {
+	if runtime.GOOS != "windows" {
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	_ = os.Remove(exe + ".old")
 }

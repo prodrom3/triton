@@ -5,6 +5,7 @@ package main
 
 import (
 	"net"
+	"os"
 	"testing"
 )
 
@@ -142,5 +143,46 @@ func TestExpandCIDR_TooLarge(t *testing.T) {
 	got := expandCIDR([]string{"10.0.0.0/8"})
 	if len(got) != 0 {
 		t.Errorf("expected /8 to be skipped (too large), got %d results", len(got))
+	}
+}
+
+func TestApplyConfigPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/.triton.json"
+	cfgJSON := `{"workers":8,"ping_port":8080,"retries":3,"ports":"22,3389","no_traceroute":true}`
+	if err := os.WriteFile(path, []byte(cfgJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &cliConfig{
+		configFile: path,
+		workers:    4,  // flag default
+		pingPort:   80, // flag default
+		retries:    0,  // flag default
+		maxHops:    20,
+		timeout:    30.0,
+	}
+	// Simulate: user explicitly passed --workers and --ping-port (even though
+	// --ping-port 80 equals the default), but not --retries or --ports.
+	setFlags := map[string]bool{"workers": true, "ping-port": true}
+
+	if err := applyConfigFile(cfg, setFlags); err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.workers != 4 {
+		t.Errorf("explicit --workers must win over config: got %d want 4", cfg.workers)
+	}
+	if cfg.pingPort != 80 {
+		t.Errorf("explicit --ping-port 80 must win over config: got %d want 80", cfg.pingPort)
+	}
+	if cfg.retries != 3 {
+		t.Errorf("unset --retries must take config value: got %d want 3", cfg.retries)
+	}
+	if cfg.ports != "22,3389" || !cfg.doPorts {
+		t.Errorf("config ports must apply: ports=%q doPorts=%v", cfg.ports, cfg.doPorts)
+	}
+	if !cfg.noTraceroute {
+		t.Errorf("config no_traceroute must apply when flag unset")
 	}
 }
