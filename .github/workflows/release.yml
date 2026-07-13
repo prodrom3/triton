@@ -18,7 +18,7 @@ jobs:
       # Build release binaries with the latest patched Go so the shipped
       # standard library carries current security fixes.
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version: "stable"
 
