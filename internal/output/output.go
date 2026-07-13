@@ -39,12 +39,13 @@ func colorEnabled(w io.Writer) bool {
 
 // Renderer handles all output formatting.
 type Renderer struct {
-	Out      io.Writer
-	Err      io.Writer
-	Quiet    bool
-	outColor bool
-	errColor bool
-	progMu   sync.Mutex // serializes Progress writes from concurrent workers
+	Out            io.Writer
+	Err            io.Writer
+	Quiet          bool
+	CertExpiryDays int // warn when a certificate expires within this many days
+	outColor       bool
+	errColor       bool
+	progMu         sync.Mutex // serializes Progress writes from concurrent workers
 }
 
 // NewRenderer creates a Renderer with defaults. Color detection is done once.
@@ -262,7 +263,19 @@ func (r *Renderer) TLSCert(t *models.TlsCertResult) {
 		fmt.Fprintf(r.Out, "    Not Before: %s\n", clean(*t.NotBefore))
 	}
 	if t.NotAfter != nil {
-		fmt.Fprintf(r.Out, "    Not After:  %s\n", clean(*t.NotAfter))
+		line := fmt.Sprintf("    Not After:  %s", clean(*t.NotAfter))
+		if t.DaysUntilExpiry != nil {
+			d := *t.DaysUntilExpiry
+			switch {
+			case t.Expired || d < 0:
+				line += r.c("  (EXPIRED)", red)
+			case d <= r.CertExpiryDays:
+				line += r.c(fmt.Sprintf("  (expires in %d days)", d), yellow)
+			default:
+				line += fmt.Sprintf("  (%d days)", d)
+			}
+		}
+		fmt.Fprintln(r.Out, line)
 	}
 	if len(t.SANs) > 0 {
 		display := t.SANs
@@ -294,8 +307,14 @@ func (r *Renderer) HTTPProbe(results []models.HTTPProbeResult) {
 			line += fmt.Sprintf(" -> %s", clean(*h.FinalURL))
 		}
 		fmt.Fprintln(r.Out, line)
+		if h.Title != nil {
+			fmt.Fprintf(r.Out, "      Title: %s\n", clean(*h.Title))
+		}
 		if h.Server != nil {
 			fmt.Fprintf(r.Out, "      Server: %s\n", clean(*h.Server))
+		}
+		if len(h.Tech) > 0 {
+			fmt.Fprintf(r.Out, "      Tech: %s\n", clean(strings.Join(h.Tech, ", ")))
 		}
 		if h.SecurityHeaders.Missing != nil {
 			fmt.Fprintf(r.Out, "      Missing headers: %s\n",
@@ -307,9 +326,13 @@ func (r *Renderer) HTTPProbe(results []models.HTTPProbeResult) {
 	}
 }
 
-// Ping prints TCP ping results.
+// Ping prints TCP or ICMP ping results.
 func (r *Renderer) Ping(p *models.PingResult) {
-	r.section(fmt.Sprintf("Ping %s:%d", p.IP, p.Port))
+	if p.Protocol == "icmp" {
+		r.section(fmt.Sprintf("ICMP Ping %s", p.IP))
+	} else {
+		r.section(fmt.Sprintf("Ping %s:%d", p.IP, p.Port))
+	}
 	if p.Error != nil {
 		fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    %s", *p.Error), red))
 		return
@@ -462,7 +485,22 @@ func (r *Renderer) Analysis(result models.AnalysisResult, showDBWarning bool) {
 	if result.Ping != nil {
 		r.Ping(result.Ping)
 	}
+	if result.ICMP != nil {
+		r.Ping(result.ICMP)
+	}
 	fmt.Fprintln(r.Out)
+}
+
+// JSONLine writes a single result as one line of compact JSON. It is safe for
+// concurrent use so results can be streamed as targets complete.
+func (r *Renderer) JSONLine(result models.AnalysisResult) {
+	data, err := models.MarshalResultLine(result)
+	if err != nil {
+		return
+	}
+	r.progMu.Lock()
+	defer r.progMu.Unlock()
+	fmt.Fprintln(r.Out, string(data))
 }
 
 // JSONOutput prints results as formatted JSON.

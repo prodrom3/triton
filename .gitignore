@@ -34,3 +34,8 @@ logs/
 
 # Environment
 .env
+
+# Release signing key (created locally during signing setup; never commit)
+release-signing.key
+*.key
+cover.out

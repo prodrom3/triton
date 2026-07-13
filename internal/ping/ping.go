@@ -55,11 +55,12 @@ func TCPPing(ctx context.Context, dialer *network.Dialer, ip string, port int, c
 	}
 
 	result := models.PingResult{
-		IP:    ip,
-		Port:  port,
-		Count: count,
-		RTTs:  rtts,
-		Loss:  calcLoss(count, failures),
+		IP:       ip,
+		Protocol: "tcp",
+		Port:     port,
+		Count:    count,
+		RTTs:     rtts,
+		Loss:     calcLoss(count, failures),
 	}
 
 	if len(rtts) > 0 {

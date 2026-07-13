@@ -255,6 +255,14 @@ func TestTLSCertInfoSelfSigned(t *testing.T) {
 	if !result.SelfSigned {
 		t.Error("expected self-signed flag")
 	}
+	// The unverified fallback must still report the presented certificate's
+	// expiry rather than discarding it.
+	if result.NotAfter == nil {
+		t.Error("expected NotAfter from the self-signed cert")
+	}
+	if result.DaysUntilExpiry == nil {
+		t.Error("expected DaysUntilExpiry from the self-signed cert")
+	}
 }
 
 func TestTLSCertInfoConnectionRefused(t *testing.T) {

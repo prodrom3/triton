@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"sync"
 	"time"
 
@@ -39,8 +40,12 @@ type Config struct {
 	DoHTTP       bool
 	DoPing       bool
 	PingPort     int
+	DoICMP       bool
 	NoPrivate    bool
 	Family       int // 0 = any, 4 = IPv4 only, 6 = IPv6 only
+	UserAgent    string
+	Headers      []string
+	Resolver     *net.Resolver
 	Dialer       *network.Dialer
 }
 
@@ -87,7 +92,7 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 		result.ResolvedIPs = []string{target}
 	} else {
 		start := time.Now()
-		rawIPs := network.ResolveDomain(resolveCtx, target)
+		rawIPs := network.ResolveDomain(resolveCtx, cfg.Resolver, target)
 		ips := network.FilterByFamily(rawIPs, cfg.Family)
 		slog.Info("Probe complete", "probe", "dns", "target", target, "duration", time.Since(start).Round(time.Millisecond))
 		result.ResolvedIPs = ips
@@ -144,7 +149,7 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 			go func() {
 				defer wg.Done()
 				start := time.Now()
-				tr := tracer.PerformTraceroute(ctx, traceIP, cfg.MaxHops, cfg.Timeout)
+				tr := tracer.PerformTraceroute(ctx, cfg.Resolver, traceIP, cfg.MaxHops, cfg.Timeout)
 				slog.Info("Probe complete", "probe", "traceroute", "target", target, "duration", time.Since(start).Round(time.Millisecond))
 				mu.Lock()
 				result.Traceroute = &tr
@@ -185,7 +190,7 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 			dnsCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 			defer cancel()
 			start := time.Now()
-			dr := dns.QueryDnsRecords(dnsCtx, target)
+			dr := dns.QueryDnsRecords(dnsCtx, cfg.Resolver, target)
 			slog.Info("Probe complete", "probe", "dns_records", "target", target, "duration", time.Since(start).Round(time.Millisecond))
 			mu.Lock()
 			result.DnsRecords = &dr
@@ -248,6 +253,19 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 		}()
 	}
 
+	if cfg.DoICMP {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			start := time.Now()
+			p := ping.ICMPPing(ctx, scanIP, 3, cfg.Timeout)
+			slog.Info("Probe complete", "probe", "icmp", "target", target, "duration", time.Since(start).Round(time.Millisecond))
+			mu.Lock()
+			result.ICMP = &p
+			mu.Unlock()
+		}()
+	}
+
 	// Wait for all probes including port scan to finish before HTTP probing,
 	// since HTTP probing depends on knowing which ports are open.
 	wg.Wait()
@@ -269,7 +287,7 @@ func AnalyzeTarget(ctx context.Context, target string, geoReader GeoLookup, cfg 
 				go func(p int) {
 					defer httpWg.Done()
 					start := time.Now()
-					hr := httpprobe.Probe(ctx, cfg.Dialer, httpHost, scanIP, p, cfg.Timeout)
+					hr := httpprobe.Probe(ctx, cfg.Dialer, httpHost, scanIP, p, cfg.Timeout, cfg.UserAgent, cfg.Headers)
 					slog.Info("Probe complete", "probe", "http", "target", target, "port", p, "status", hr.StatusCode, "duration", time.Since(start).Round(time.Millisecond))
 					httpMu.Lock()
 					httpResults = append(httpResults, hr)

@@ -13,28 +13,31 @@ import (
 // Uses JSON internally since Go stdlib supports it without dependencies.
 // The file is named .triton.json for simplicity.
 type File struct {
-	DB           string   `json:"db,omitempty"`
-	ASNDB        string   `json:"asn_db,omitempty"`
-	MaxHops      *int     `json:"max_hops,omitempty"`
-	Timeout      *float64 `json:"timeout,omitempty"`
-	Workers      *int     `json:"workers,omitempty"`
-	NoTraceroute *bool    `json:"no_traceroute,omitempty"`
-	Whois        *bool    `json:"whois,omitempty"`
-	DnsAll       *bool    `json:"dns_all,omitempty"`
-	Ports        string   `json:"ports,omitempty"`
-	TLS          *bool    `json:"tls,omitempty"`
-	AllIPs       *bool    `json:"all_ips,omitempty"`
-	Ping         *bool    `json:"ping,omitempty"`
-	HTTP         *bool    `json:"http,omitempty"`
-	Verbose      *bool    `json:"verbose,omitempty"`
-	Quiet        *bool    `json:"quiet,omitempty"`
-	Log          *bool    `json:"log,omitempty"`
-	Proxy        string   `json:"proxy,omitempty"`
-	Rate         *float64 `json:"rate,omitempty"`
-	Retries      *int     `json:"retries,omitempty"`
-	NoPrivate    *bool    `json:"no_private,omitempty"`
-	PingPort     *int     `json:"ping_port,omitempty"`
-	Targets      []string `json:"targets,omitempty"`
+	DB             string   `json:"db,omitempty"`
+	ASNDB          string   `json:"asn_db,omitempty"`
+	MaxHops        *int     `json:"max_hops,omitempty"`
+	Timeout        *float64 `json:"timeout,omitempty"`
+	Workers        *int     `json:"workers,omitempty"`
+	NoTraceroute   *bool    `json:"no_traceroute,omitempty"`
+	Whois          *bool    `json:"whois,omitempty"`
+	DnsAll         *bool    `json:"dns_all,omitempty"`
+	Ports          string   `json:"ports,omitempty"`
+	TLS            *bool    `json:"tls,omitempty"`
+	AllIPs         *bool    `json:"all_ips,omitempty"`
+	Ping           *bool    `json:"ping,omitempty"`
+	HTTP           *bool    `json:"http,omitempty"`
+	Verbose        *bool    `json:"verbose,omitempty"`
+	Quiet          *bool    `json:"quiet,omitempty"`
+	Log            *bool    `json:"log,omitempty"`
+	Proxy          string   `json:"proxy,omitempty"`
+	Rate           *float64 `json:"rate,omitempty"`
+	Retries        *int     `json:"retries,omitempty"`
+	NoPrivate      *bool    `json:"no_private,omitempty"`
+	PingPort       *int     `json:"ping_port,omitempty"`
+	CertExpiryDays *int     `json:"cert_expiry_days,omitempty"`
+	Resolver       string   `json:"resolver,omitempty"`
+	UserAgent      string   `json:"user_agent,omitempty"`
+	Targets        []string `json:"targets,omitempty"`
 }
 
 // Load reads the configuration file. When explicitPath is non-empty, only that

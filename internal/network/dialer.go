@@ -185,7 +185,7 @@ func (p *ProxyConfig) dial(ctx context.Context, addr string, timeout time.Durati
 	}
 	_ = conn.SetDeadline(hsDeadline)
 
-	result := net.Conn(conn)
+	result := conn
 	var herr error
 	if p.scheme == "socks5" {
 		herr = p.socks5Handshake(conn, addr)

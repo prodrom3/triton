@@ -65,16 +65,18 @@ type PortResult struct {
 
 // TlsCertResult holds TLS certificate information.
 type TlsCertResult struct {
-	Host       string   `json:"host"`
-	Success    bool     `json:"success"`
-	Issuer     *string  `json:"issuer,omitempty"`
-	Subject    *string  `json:"subject,omitempty"`
-	NotBefore  *string  `json:"not_before,omitempty"`
-	NotAfter   *string  `json:"not_after,omitempty"`
-	SANs       []string `json:"sans,omitempty"`
-	SelfSigned bool     `json:"self_signed,omitempty"`
-	Protocol   *string  `json:"protocol,omitempty"`
-	Error      *string  `json:"error,omitempty"`
+	Host            string   `json:"host"`
+	Success         bool     `json:"success"`
+	Issuer          *string  `json:"issuer,omitempty"`
+	Subject         *string  `json:"subject,omitempty"`
+	NotBefore       *string  `json:"not_before,omitempty"`
+	NotAfter        *string  `json:"not_after,omitempty"`
+	DaysUntilExpiry *int     `json:"days_until_expiry,omitempty"`
+	Expired         bool     `json:"expired,omitempty"`
+	SANs            []string `json:"sans,omitempty"`
+	SelfSigned      bool     `json:"self_signed,omitempty"`
+	Protocol        *string  `json:"protocol,omitempty"`
+	Error           *string  `json:"error,omitempty"`
 }
 
 // HTTPProbeResult holds HTTP response metadata for a probed URL.
@@ -83,6 +85,8 @@ type HTTPProbeResult struct {
 	StatusCode      int             `json:"status_code,omitempty"`
 	Status          string          `json:"status,omitempty"`
 	Server          *string         `json:"server,omitempty"`
+	Title           *string         `json:"title,omitempty"`
+	Tech            []string        `json:"tech,omitempty"`
 	FinalURL        *string         `json:"final_url,omitempty"`
 	SecurityHeaders SecurityHeaders `json:"security_headers,omitempty"`
 	Error           *string         `json:"error,omitempty"`
@@ -98,17 +102,18 @@ type SecurityHeaders struct {
 	Missing             *string `json:"missing,omitempty"`
 }
 
-// PingResult holds TCP ping latency measurements.
+// PingResult holds latency measurements for a TCP or ICMP ping.
 type PingResult struct {
-	IP    string    `json:"ip"`
-	Port  int       `json:"port"`
-	Count int       `json:"count"`
-	RTTs  []float64 `json:"rtts,omitempty"`
-	Min   *float64  `json:"min_ms,omitempty"`
-	Max   *float64  `json:"max_ms,omitempty"`
-	Avg   *float64  `json:"avg_ms,omitempty"`
-	Loss  float64   `json:"loss_pct"`
-	Error *string   `json:"error,omitempty"`
+	IP       string    `json:"ip"`
+	Protocol string    `json:"protocol,omitempty"` // "tcp" or "icmp"
+	Port     int       `json:"port,omitempty"`
+	Count    int       `json:"count"`
+	RTTs     []float64 `json:"rtts,omitempty"`
+	Min      *float64  `json:"min_ms,omitempty"`
+	Max      *float64  `json:"max_ms,omitempty"`
+	Avg      *float64  `json:"avg_ms,omitempty"`
+	Loss     float64   `json:"loss_pct"`
+	Error    *string   `json:"error,omitempty"`
 }
 
 // AnalysisResult is the composite result for a single target.
@@ -125,6 +130,7 @@ type AnalysisResult struct {
 	TLS         *TlsCertResult    `json:"tls,omitempty"`
 	HTTP        []HTTPProbeResult `json:"http,omitempty"`
 	Ping        *PingResult       `json:"ping,omitempty"`
+	ICMP        *PingResult       `json:"icmp,omitempty"`
 	Error       *string           `json:"error,omitempty"`
 }
 
@@ -162,6 +168,12 @@ func structToMap(v any) map[string]any {
 // Ptr is a helper to create a pointer to a value.
 func Ptr[T any](v T) *T {
 	return &v
+}
+
+// MarshalResultLine marshals a single result to compact one-line JSON for
+// streaming (JSONL) output.
+func MarshalResultLine(r AnalysisResult) ([]byte, error) {
+	return json.Marshal(r)
 }
 
 // MarshalResultsJSON marshals results as JSON matching the expected output format.
