@@ -47,6 +47,26 @@ func TestParseSystemOutputLinux(t *testing.T) {
 	}
 }
 
+func TestParseSystemOutputLinuxIPv6(t *testing.T) {
+	output := ` 1  2001:db8::1  1.234 ms
+ 2  2606:4700:4700::1111  5.678 ms
+ 3  *
+`
+	hops := parseSystemOutput(output)
+	if len(hops) != 3 {
+		t.Fatalf("expected 3 hops, got %d", len(hops))
+	}
+	if hops[0].IP != "2001:db8::1" || hops[0].RTT == nil || *hops[0].RTT != 1.234 {
+		t.Errorf("hop 0: got IP=%s RTT=%v", hops[0].IP, hops[0].RTT)
+	}
+	if hops[1].IP != "2606:4700:4700::1111" {
+		t.Errorf("hop 1: got IP=%s", hops[1].IP)
+	}
+	if hops[2].IP != "*" {
+		t.Errorf("hop 2: expected timeout hop, got IP=%s", hops[2].IP)
+	}
+}
+
 func TestParseSystemOutputLinuxTimeout(t *testing.T) {
 	output := ` 1  192.168.1.1  1.234 ms
  2  * * *

@@ -163,3 +163,40 @@ func TestExportMapNoMarkers(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCSVSafeNeutralizesFormulaInjection(t *testing.T) {
+	cases := map[string]string{
+		"=cmd|' /C calc'!A0": "'=cmd|' /C calc'!A0",
+		"+SUM(A1)":           "'+SUM(A1)",
+		"-2+3":               "'-2+3",
+		"@import":            "'@import",
+		"normal":             "normal",
+		"":                   "",
+	}
+	for in, want := range cases {
+		if got := csvSafe(in); got != want {
+			t.Errorf("csvSafe(%q)=%q want %q", in, got, want)
+		}
+	}
+}
+
+func TestCSVStripsControlChars(t *testing.T) {
+	if got := csvSafe("a\x1b[31mb\x00c"); got != "a[31mbc" {
+		t.Errorf("csvSafe left control chars: %q", got)
+	}
+}
+
+func TestMapExportPinsIntegrity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "m.html")
+	if err := ExportMap(sampleResults(), path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "integrity=\"sha256-") {
+		t.Error("map export must pin CDN assets with Subresource Integrity")
+	}
+}

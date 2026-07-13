@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/prodrom3/triton/internal/models"
 )
@@ -43,6 +44,7 @@ type Renderer struct {
 	Quiet    bool
 	outColor bool
 	errColor bool
+	progMu   sync.Mutex // serializes Progress writes from concurrent workers
 }
 
 // NewRenderer creates a Renderer with defaults. Color detection is done once.
@@ -77,17 +79,19 @@ func (r *Renderer) Progress(current, total int, target string) {
 	if r.Quiet {
 		return
 	}
+	r.progMu.Lock()
+	defer r.progMu.Unlock()
 	fmt.Fprintf(r.Err, "%s analyzing: %s\n",
-		r.cErr(fmt.Sprintf("  [%d/%d]", current, total), dim), target)
+		r.cErr(fmt.Sprintf("  [%d/%d]", current, total), dim), clean(target))
 }
 
 // FormatGeo returns a formatted geolocation line.
 func (r *Renderer) FormatGeo(g models.GeoResult) string {
-	parts := []string{g.City}
+	parts := []string{clean(g.City)}
 	if g.Region != nil {
-		parts = append(parts, *g.Region)
+		parts = append(parts, clean(*g.Region))
 	}
-	parts = append(parts, g.Country)
+	parts = append(parts, clean(g.Country))
 	location := strings.Join(parts, ", ")
 
 	var line string
@@ -98,13 +102,13 @@ func (r *Renderer) FormatGeo(g models.GeoResult) string {
 		}
 	} else {
 		line = fmt.Sprintf("    %s  ->  %s", g.IP,
-			r.c(fmt.Sprintf("%s, %s", g.City, g.Country), yellow))
+			r.c(fmt.Sprintf("%s, %s", clean(g.City), clean(g.Country)), yellow))
 	}
 
 	if g.ASN != nil {
 		line += fmt.Sprintf("  AS%d", *g.ASN)
 		if g.ASNOrg != nil {
-			line += fmt.Sprintf(" (%s)", *g.ASNOrg)
+			line += fmt.Sprintf(" (%s)", clean(*g.ASNOrg))
 		}
 	}
 	return line
@@ -122,16 +126,17 @@ func (r *Renderer) section(title string) {
 
 func (r *Renderer) header(target string) {
 	fmt.Fprintln(r.Out)
-	fmt.Fprintln(r.Out, r.c(fmt.Sprintf("  triton - Analyzing: %s", target), bold+cyan))
+	fmt.Fprintln(r.Out, r.c(fmt.Sprintf("  triton - Analyzing: %s", clean(target)), bold+cyan))
 	fmt.Fprintln(r.Out, r.c("  "+strings.Repeat("-", 40), dim))
 }
 
 // DNS prints DNS resolution results.
 func (r *Renderer) DNS(domain string, ips []string) {
 	r.section("DNS Resolution")
+	domain = clean(domain)
 	if len(ips) > 0 {
 		for _, ip := range ips {
-			fmt.Fprintf(r.Out, "    %s  ->  %s\n", domain, ip)
+			fmt.Fprintf(r.Out, "    %s  ->  %s\n", domain, clean(ip))
 		}
 	} else {
 		fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    No IPs found for %s", domain), red))
@@ -140,26 +145,26 @@ func (r *Renderer) DNS(domain string, ips []string) {
 
 // DNSRecords prints extended DNS records.
 func (r *Renderer) DNSRecords(records *models.DnsRecords) {
-	r.section(fmt.Sprintf("DNS Records for %s", records.Domain))
+	r.section(fmt.Sprintf("DNS Records for %s", clean(records.Domain)))
 	hasAny := false
 	if len(records.NS) > 0 {
-		fmt.Fprintf(r.Out, "    NS:    %s\n", strings.Join(records.NS, ", "))
+		fmt.Fprintf(r.Out, "    NS:    %s\n", strings.Join(cleanAll(records.NS), ", "))
 		hasAny = true
 	}
 	if len(records.MX) > 0 {
-		fmt.Fprintf(r.Out, "    MX:    %s\n", strings.Join(records.MX, ", "))
+		fmt.Fprintf(r.Out, "    MX:    %s\n", strings.Join(cleanAll(records.MX), ", "))
 		hasAny = true
 	}
 	if len(records.CNAME) > 0 {
-		fmt.Fprintf(r.Out, "    CNAME: %s\n", strings.Join(records.CNAME, ", "))
+		fmt.Fprintf(r.Out, "    CNAME: %s\n", strings.Join(cleanAll(records.CNAME), ", "))
 		hasAny = true
 	}
 	if records.SOA != nil {
-		fmt.Fprintf(r.Out, "    SOA:   %s\n", *records.SOA)
+		fmt.Fprintf(r.Out, "    SOA:   %s\n", clean(*records.SOA))
 		hasAny = true
 	}
 	for _, txt := range records.TXT {
-		fmt.Fprintf(r.Out, "    TXT:   %s\n", txt)
+		fmt.Fprintf(r.Out, "    TXT:   %s\n", clean(txt))
 		hasAny = true
 	}
 	if !hasAny {
@@ -187,9 +192,9 @@ func (r *Renderer) Traceroute(tr *models.TracerouteResult) {
 		}
 		hostStr := ""
 		if hop.Hostname != nil {
-			hostStr = fmt.Sprintf("  (%s)", *hop.Hostname)
+			hostStr = fmt.Sprintf("  (%s)", clean(*hop.Hostname))
 		}
-		fmt.Fprintf(r.Out, "    %3d  %-20s  %s%s\n", hop.TTL, hop.IP, rttStr, hostStr)
+		fmt.Fprintf(r.Out, "    %3d  %-20s  %s%s\n", hop.TTL, clean(hop.IP), rttStr, hostStr)
 	}
 }
 
@@ -203,16 +208,16 @@ func (r *Renderer) Whois(w *models.WhoisResult) {
 		return
 	}
 	if w.Org != nil {
-		fmt.Fprintf(r.Out, "    Organization:  %s\n", *w.Org)
+		fmt.Fprintf(r.Out, "    Organization:  %s\n", clean(*w.Org))
 	}
 	if w.Netname != nil {
-		fmt.Fprintf(r.Out, "    Network Name:  %s\n", *w.Netname)
+		fmt.Fprintf(r.Out, "    Network Name:  %s\n", clean(*w.Netname))
 	}
 	if w.CIDR != nil {
-		fmt.Fprintf(r.Out, "    CIDR/Range:    %s\n", *w.CIDR)
+		fmt.Fprintf(r.Out, "    CIDR/Range:    %s\n", clean(*w.CIDR))
 	}
 	if w.Description != nil {
-		fmt.Fprintf(r.Out, "    Description:   %s\n", *w.Description)
+		fmt.Fprintf(r.Out, "    Description:   %s\n", clean(*w.Description))
 	}
 }
 
@@ -224,9 +229,9 @@ func (r *Renderer) Ports(openPorts []models.PortResult, closedCount int) {
 		return
 	}
 	for _, p := range openPorts {
-		line := fmt.Sprintf("    %5d/%-12s %s", p.Port, p.Service, r.c("open", green))
+		line := fmt.Sprintf("    %5d/%-12s %s", p.Port, clean(p.Service), r.c("open", green))
 		if p.Banner != nil {
-			line += fmt.Sprintf("  %s", *p.Banner)
+			line += fmt.Sprintf("  %s", clean(*p.Banner))
 		}
 		fmt.Fprintln(r.Out, line)
 	}
@@ -237,7 +242,7 @@ func (r *Renderer) Ports(openPorts []models.PortResult, closedCount int) {
 
 // TLSCert prints TLS certificate details.
 func (r *Renderer) TLSCert(t *models.TlsCertResult) {
-	r.section(fmt.Sprintf("TLS Certificate for %s", t.Host))
+	r.section(fmt.Sprintf("TLS Certificate for %s", clean(t.Host)))
 	if !t.Success {
 		if t.Error != nil {
 			fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    %s", *t.Error), red))
@@ -248,23 +253,23 @@ func (r *Renderer) TLSCert(t *models.TlsCertResult) {
 		fmt.Fprintln(r.Out, r.c("    WARNING: Self-signed or unverified certificate", yellow))
 	}
 	if t.Subject != nil {
-		fmt.Fprintf(r.Out, "    Subject:    %s\n", *t.Subject)
+		fmt.Fprintf(r.Out, "    Subject:    %s\n", clean(*t.Subject))
 	}
 	if t.Issuer != nil {
-		fmt.Fprintf(r.Out, "    Issuer:     %s\n", *t.Issuer)
+		fmt.Fprintf(r.Out, "    Issuer:     %s\n", clean(*t.Issuer))
 	}
 	if t.NotBefore != nil {
-		fmt.Fprintf(r.Out, "    Not Before: %s\n", *t.NotBefore)
+		fmt.Fprintf(r.Out, "    Not Before: %s\n", clean(*t.NotBefore))
 	}
 	if t.NotAfter != nil {
-		fmt.Fprintf(r.Out, "    Not After:  %s\n", *t.NotAfter)
+		fmt.Fprintf(r.Out, "    Not After:  %s\n", clean(*t.NotAfter))
 	}
 	if len(t.SANs) > 0 {
 		display := t.SANs
 		if len(display) > 10 {
 			display = display[:10]
 		}
-		fmt.Fprintf(r.Out, "    SANs:       %s\n", strings.Join(display, ", "))
+		fmt.Fprintf(r.Out, "    SANs:       %s\n", strings.Join(cleanAll(display), ", "))
 		if len(t.SANs) > 10 {
 			fmt.Fprintf(r.Out, "                ... and %d more\n", len(t.SANs)-10)
 		}
@@ -284,20 +289,20 @@ func (r *Renderer) HTTPProbe(results []models.HTTPProbeResult) {
 		} else if h.StatusCode >= 300 {
 			status = r.c(fmt.Sprintf("%d", h.StatusCode), yellow)
 		}
-		line := fmt.Sprintf("    %s  %s", status, h.URL)
+		line := fmt.Sprintf("    %s  %s", status, clean(h.URL))
 		if h.FinalURL != nil {
-			line += fmt.Sprintf(" -> %s", *h.FinalURL)
+			line += fmt.Sprintf(" -> %s", clean(*h.FinalURL))
 		}
 		fmt.Fprintln(r.Out, line)
 		if h.Server != nil {
-			fmt.Fprintf(r.Out, "      Server: %s\n", *h.Server)
+			fmt.Fprintf(r.Out, "      Server: %s\n", clean(*h.Server))
 		}
 		if h.SecurityHeaders.Missing != nil {
 			fmt.Fprintf(r.Out, "      Missing headers: %s\n",
 				r.c(*h.SecurityHeaders.Missing, yellow))
 		}
 		if h.Error != nil {
-			fmt.Fprintf(r.Out, "      %s\n", r.c(*h.Error, red))
+			fmt.Fprintf(r.Out, "      %s\n", r.c(clean(*h.Error), red))
 		}
 	}
 }
@@ -333,14 +338,14 @@ func (r *Renderer) SummaryTable(results []models.AnalysisResult) {
 	fmt.Fprintf(r.Out, "    %s\n", strings.Repeat("-", 90))
 
 	for _, res := range results {
-		target := res.Target
+		target := clean(res.Target)
 		if len(target) > 28 {
 			target = target[:28] + ".."
 		}
 
 		ip := "-"
 		if len(res.ResolvedIPs) > 0 {
-			ip = res.ResolvedIPs[0]
+			ip = clean(res.ResolvedIPs[0])
 		}
 		if len(ip) > 16 {
 			ip = ip[:16] + ".."
@@ -354,7 +359,7 @@ func (r *Renderer) SummaryTable(results []models.AnalysisResult) {
 		geoStr := "-"
 		if len(res.GeoResults) > 0 && res.GeoResults[0].Found {
 			g := res.GeoResults[0]
-			geoStr = fmt.Sprintf("%s, %s", g.City, g.Country)
+			geoStr = clean(fmt.Sprintf("%s, %s", g.City, g.Country))
 			if len(geoStr) > 20 {
 				geoStr = geoStr[:20] + ".."
 			}
@@ -388,18 +393,18 @@ func (r *Renderer) DiffChanges(changes []map[string]any) {
 	}
 	for _, c := range changes {
 		change := fmt.Sprint(c["change"])
-		target := fmt.Sprint(c["target"])
+		target := clean(fmt.Sprint(c["target"]))
 		switch change {
 		case "new":
-			fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    + %s: %s", target, c["details"]), green))
+			fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    + %s: %s", target, clean(fmt.Sprint(c["details"]))), green))
 		case "removed":
-			fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    - %s: %s", target, c["details"]), red))
+			fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    - %s: %s", target, clean(fmt.Sprint(c["details"]))), red))
 		case "changed":
-			field := fmt.Sprint(c["field"])
-			fmt.Fprintf(r.Out, "    ~ %s.%s: %s -> %s\n", target, field, c["old"], c["new"])
+			field := clean(fmt.Sprint(c["field"]))
+			fmt.Fprintf(r.Out, "    ~ %s.%s: %s -> %s\n", target, field, clean(fmt.Sprint(c["old"])), clean(fmt.Sprint(c["new"])))
 		case "added":
-			field := fmt.Sprint(c["field"])
-			fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    + %s.%s: %s", target, field, c["value"]), green))
+			field := clean(fmt.Sprint(c["field"]))
+			fmt.Fprintln(r.Out, r.c(fmt.Sprintf("    + %s.%s: %s", target, field, clean(fmt.Sprint(c["value"]))), green))
 		}
 	}
 }
