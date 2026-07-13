@@ -4,15 +4,60 @@
 package export
 
 import (
+	"bytes"
 	"encoding/csv"
-	"encoding/json"
 	"fmt"
 	"html"
+	"html/template"
 	"os"
 	"strings"
 
 	"github.com/prodrom3/triton/internal/models"
 )
+
+// mapMarker is one point plotted on the geo map. Field names are exported so
+// html/template can serialize them; the json tags name the JavaScript fields.
+type mapMarker struct {
+	Lat   float64 `json:"lat"`
+	Lon   float64 `json:"lon"`
+	Label string  `json:"label"`
+	IP    string  `json:"ip"`
+}
+
+// mapPageTemplate renders the geo map. It uses html/template so the marker data
+// is contextually auto-escaped for the <script> JavaScript context: values are
+// serialized as JSON with < > & and the U+2028/U+2029 line terminators escaped,
+// which makes it impossible for an attacker-controlled target name or WHOIS
+// field to break out of the script and inject markup or code.
+var mapPageTemplate = template.Must(template.New("map").Parse(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>triton Map</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJ8T7CfaFXCwcJ0T6EOtvsyh8fNbQ=" crossorigin="anonymous"></script>
+<style>body{margin:0}#map{height:100vh;width:100vw}</style>
+</head><body>
+<div id="map"></div>
+<script>
+var leafletMap = L.map('map').setView([20, 0], 2);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: 'OpenStreetMap'
+}).addTo(leafletMap);
+var markers = {{ .Markers }};
+markers.forEach(function(m) {
+    var el = document.createElement('div');
+    var b = document.createElement('b');
+    b.textContent = m.label;
+    el.appendChild(b);
+    el.appendChild(document.createElement('br'));
+    el.appendChild(document.createTextNode(m.ip));
+    L.marker([m.lat, m.lon]).addTo(leafletMap).bindPopup(el);
+});
+if (markers.length > 0) {
+    var bounds = markers.map(function(m) { return [m.lat, m.lon]; });
+    leafletMap.fitBounds(bounds, {padding: [50, 50]});
+}
+</script></body></html>`))
 
 // stripControl removes control characters (C0, DEL, C1) from untrusted strings
 // so exported files cannot carry terminal escape sequences.
@@ -202,18 +247,11 @@ tr:hover { background: #f0f7ff; }
 // hashes, so a tampered CDN response is rejected by the browser. Viewing the map
 // therefore requires network access.
 func ExportMap(results []models.AnalysisResult, path string) error {
-	type marker struct {
-		Lat   float64 `json:"lat"`
-		Lon   float64 `json:"lon"`
-		Label string  `json:"label"`
-		IP    string  `json:"ip"`
-	}
-
-	var markers []marker
+	var markers []mapMarker
 	for _, r := range results {
 		for _, g := range r.GeoResults {
 			if g.Latitude != nil && g.Longitude != nil {
-				markers = append(markers, marker{
+				markers = append(markers, mapMarker{
 					Lat:   *g.Latitude,
 					Lon:   *g.Longitude,
 					Label: fmt.Sprintf("%s - %s, %s", r.Target, g.City, g.Country),
@@ -223,44 +261,11 @@ func ExportMap(results []models.AnalysisResult, path string) error {
 		}
 	}
 
-	markersJSON, err := json.Marshal(markers)
-	if err != nil {
-		markersJSON = []byte("[]")
+	var buf bytes.Buffer
+	if err := mapPageTemplate.Execute(&buf, struct{ Markers []mapMarker }{Markers: markers}); err != nil {
+		return err
 	}
-
-	// Uses textContent for popup rendering to prevent XSS.
-	// Variable named 'leafletMap' to avoid shadowing the JS Map built-in.
-	htmlStr := fmt.Sprintf(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>triton Map</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous"/>
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-    integrity="sha256-20nQCchB9co0qIjJ8T7CfaFXCwcJ0T6EOtvsyh8fNbQ=" crossorigin="anonymous"></script>
-<style>body{margin:0}#map{height:100vh;width:100vw}</style>
-</head><body>
-<div id="map"></div>
-<script>
-var leafletMap = L.map('map').setView([20, 0], 2);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: 'OpenStreetMap'
-}).addTo(leafletMap);
-var markers = %s;
-markers.forEach(function(m) {
-    var el = document.createElement('div');
-    var b = document.createElement('b');
-    b.textContent = m.label;
-    el.appendChild(b);
-    el.appendChild(document.createElement('br'));
-    el.appendChild(document.createTextNode(m.ip));
-    L.marker([m.lat, m.lon]).addTo(leafletMap).bindPopup(el);
-});
-if (markers.length > 0) {
-    var bounds = markers.map(function(m) { return [m.lat, m.lon]; });
-    leafletMap.fitBounds(bounds, {padding: [50, 50]});
-}
-</script></body></html>`, string(markersJSON))
-
-	return os.WriteFile(path, []byte(htmlStr), 0644)
+	return os.WriteFile(path, buf.Bytes(), 0644)
 }
 
 func derefStr(s *string) string {
