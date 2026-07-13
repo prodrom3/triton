@@ -114,8 +114,16 @@ func TestScanPortsSorted(t *testing.T) {
 	ln2, _ := net.Listen("tcp", "127.0.0.1:0")
 	defer ln1.Close()
 	defer ln2.Close()
-	go func() { conn, _ := ln1.Accept(); conn.Close() }()
-	go func() { conn, _ := ln2.Accept(); conn.Close() }()
+	go func() {
+		if conn, err := ln1.Accept(); err == nil {
+			conn.Close()
+		}
+	}()
+	go func() {
+		if conn, err := ln2.Accept(); err == nil {
+			conn.Close()
+		}
+	}()
 
 	port1 := ln1.Addr().(*net.TCPAddr).Port
 	port2 := ln2.Addr().(*net.TCPAddr).Port
@@ -168,7 +176,11 @@ func TestScanPortsIPv6(t *testing.T) {
 		t.Skip("IPv6 not available")
 	}
 	defer ln.Close()
-	go func() { conn, _ := ln.Accept(); conn.Close() }()
+	go func() {
+		if conn, err := ln.Accept(); err == nil {
+			conn.Close()
+		}
+	}()
 
 	port := ln.Addr().(*net.TCPAddr).Port
 	ctx := context.Background()
