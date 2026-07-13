@@ -13,7 +13,7 @@ jobs:
     permissions:
       contents: write # required to create the release and upload assets
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Build release binaries with the latest patched Go so the shipped
       # standard library carries current security fixes.
