@@ -1,0 +1,33 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  # Start from the standard set (govet, ineffassign, staticcheck, unused) and
+  # add a few high-signal linters. errcheck is disabled: triton deliberately
+  # ignores cleanup errors (conn.Close, os.Remove, best-effort writes), which is
+  # idiomatic here; staticcheck still catches genuine error-handling mistakes.
+  default: standard
+  disable:
+    - errcheck
+  enable:
+    - misspell
+    - unconvert
+    - bodyclose
+    - noctx
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+    rules:
+      # Fuzz seeds and test fixtures intentionally use odd inputs.
+      - path: _test\.go
+        linters:
+          - noctx
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt
+    - goimports

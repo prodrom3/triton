@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,16 @@ import (
 	"strings"
 	"time"
 )
+
+// httpGet performs a GET with an explicit background context, so requests are
+// always context-bound (and cancellable) rather than using the argless helper.
+func httpGet(client *http.Client, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return client.Do(req)
+}
 
 const (
 	repoOwner   = "prodrom3"
@@ -44,7 +55,7 @@ func CheckLatest() (string, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", apiBase, repoOwner, repoName)
 
 	client := &http.Client{Timeout: httpTimeout}
-	resp, err := client.Get(url)
+	resp, err := httpGet(client, url)
 	if err != nil {
 		return "", fmt.Errorf("failed to check for updates: %w", err)
 	}
@@ -81,7 +92,7 @@ func Update(currentVersion string) error {
 	url := fmt.Sprintf("%s/repos/%s/%s/releases/latest", apiBase, repoOwner, repoName)
 
 	client := &http.Client{Timeout: httpTimeout}
-	resp, err := client.Get(url)
+	resp, err := httpGet(client, url)
 	if err != nil {
 		return fmt.Errorf("failed to fetch release info: %w", err)
 	}
@@ -187,7 +198,7 @@ func indexAssets(assets []ghAsset) map[string]string {
 // download fetches a URL into memory, capping the read at maxBytes to bound
 // memory use against oversized or malicious responses.
 func download(client *http.Client, url string, maxBytes int64) ([]byte, error) {
-	resp, err := client.Get(url)
+	resp, err := httpGet(client, url)
 	if err != nil {
 		return nil, err
 	}

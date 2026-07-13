@@ -16,7 +16,12 @@ func LoadPrevious(path string) (map[string]map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parsePrevious(data)
+}
 
+// parsePrevious decodes previous-scan JSON bytes into a per-target map. It
+// accepts a bare array, a {"results": [...]} wrapper, or a single object.
+func parsePrevious(data []byte) (map[string]map[string]any, error) {
 	// Try as a bare JSON array first: [{"target":"a"}, ...]
 	var arr []map[string]any
 	if err := json.Unmarshal(data, &arr); err == nil && len(arr) > 0 {

@@ -38,7 +38,7 @@ In Greek mythology, Triton is the messenger of the sea, a god who could calm or 
 
 ## Why triton
 
-- **Single binary, zero runtime deps.** Static Go binary with one optional library dep (`geoip2-golang`). Drops into air-gapped runners, jump boxes, and minimal container images.
+- **Single binary, zero runtime deps.** Static Go binary with two library deps (`geoip2-golang` for GeoIP, `golang.org/x/net` for ICMP). Drops into air-gapped runners, jump boxes, and minimal container images.
 - **Pipeline-first.** Structured JSON output, deterministic exit codes, `--quiet`, file-based targets, and stdin piping make it trivial to wire into CI, SOAR playbooks, and cron jobs.
 - **Concurrent and bounded.** Multi-target analysis with configurable workers; WHOIS rate limiting, TLS minimum version pinning, and context-based timeouts for predictable behavior under load.
 - **Change detection built in.** `--diff` against a previous JSON scan highlights new hosts, changed certificates, moved ASNs, and opened or closed ports.
@@ -59,8 +59,9 @@ In Greek mythology, Triton is the messenger of the sea, a god who could calm or 
 **Surface inspection**
 - TCP connect port scan (IPv4 and IPv6), banner grabbing, 16 concurrent workers
 - TLS certificate inspection: issuer, subject, SANs, expiry, self-signed detection, protocol version, TLS 1.2 minimum pinned on all clients
-- HTTP probing: status codes, redirect chains, server fingerprint, security header audit (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy)
-- TCP ping latency (min / avg / max) with packet-loss statistics
+- HTTP probing: status codes, redirect chains, server fingerprint, page title, light technology detection, custom User-Agent and headers, and a security header audit (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy)
+- TLS certificate expiry reporting with a configurable warning threshold
+- TCP and ICMP ping latency (min / avg / max) with packet-loss statistics
 
 **Scale and workflow**
 - CIDR expansion with network / broadcast filtering (capped at 65,536 hosts)
@@ -121,6 +122,23 @@ make build                           # version-stamped build via ldflags
 go build -ldflags "-X main.version=$(cat VERSION)" -o triton .
 ```
 
+### Docker
+
+```bash
+docker build -t triton .
+docker run --rm triton --version
+# mount a GeoLite2 database to enable geolocation:
+docker run --rm -v "$PWD/GeoLite2-City.mmdb:/data/city.mmdb" triton --db /data/city.mmdb 8.8.8.8
+```
+
+### Shell completion
+
+```bash
+triton --completion bash > /etc/bash_completion.d/triton
+triton --completion zsh  > "${fpath[1]}/_triton"
+triton --completion fish > ~/.config/fish/completions/triton.fish
+```
+
 ### Self-update
 
 ```bash
@@ -164,6 +182,11 @@ triton --targets hosts.txt [OPTIONS]
 | `--http` | Probe HTTP on open web ports (status, headers, redirects) |
 | `--ping` | TCP ping latency measurement (3 probes) |
 | `--ping-port N` | TCP port used for `--ping` (default: 80) |
+| `--icmp` | ICMP echo ping (may require elevated privileges) |
+| `--cert-expiry-days N` | Warn when a TLS certificate expires within N days (default: 30) |
+| `--user-agent STR` | User-Agent header for HTTP probing |
+| `--header 'K: V'` | Extra HTTP request header (repeatable) |
+| `--resolver HOST` | Custom DNS resolver host or host:port |
 | `--all-ips` | Geolocate all resolved IPs, not just the first |
 | `--no-traceroute` | Skip traceroute |
 | `--max-hops N` | Maximum traceroute hops (default: 20) |
@@ -176,6 +199,8 @@ triton --targets hosts.txt [OPTIONS]
 | `-4` | Restrict resolution to IPv4 addresses |
 | `-6` | Restrict resolution to IPv6 addresses |
 | `--json` | JSON output |
+| `--jsonl` | Stream one JSON object per target as it completes |
+| `--completion SHELL` | Print a shell completion script (bash, zsh, fish) and exit |
 | `--csv FILE` | Export results to CSV |
 | `--html FILE` | Export results to self-contained HTML report |
 | `--map FILE` | Export geo map as HTML (Leaflet / OpenStreetMap) |
@@ -280,6 +305,9 @@ The current working directory is intentionally not searched for a config file: a
   "retries": 1,
   "proxy": "socks5://127.0.0.1:1080",
   "no_private": true,
+  "cert_expiry_days": 30,
+  "resolver": "1.1.1.1",
+  "user_agent": "triton/recon",
   "log": false
 }
 ```
@@ -363,18 +391,20 @@ go run . 8.8.8.8
 
 ### CI
 
-GitHub Actions runs on every push and PR with a least-privilege token:
+GitHub Actions runs on every push and PR with a least-privilege token, and all actions are pinned to commit SHAs:
 - **test matrix**: `{ubuntu, macos, windows} x {go 1.23, go 1.24}`, race detector on
-- **lint**: `go vet` + pinned `staticcheck`
+- **lint**: `go vet` + pinned `staticcheck` + `golangci-lint`
+- **coverage**: enforces a total-coverage floor
 - **vuln**: `govulncheck` against the Go vulnerability database
 - **gosec**: static security analysis
 - **CodeQL**: scheduled and per-PR code scanning
-- **release**: on a `v*` tag, cross-compiles linux/darwin/windows x amd64/arm64, publishes a `SHA256SUMS` manifest, and signs it when a signing key is configured (see [docs/RELEASING.md](docs/RELEASING.md))
+- **release**: on a `v*` tag, cross-compiles linux/darwin/windows x amd64/arm64, publishes a `SHA256SUMS` manifest, an SPDX SBOM, and a build-provenance attestation, and signs the manifest when a signing key is configured (see [docs/RELEASING.md](docs/RELEASING.md))
 
 ### Dependencies
 
 - [geoip2-golang](https://github.com/oschwald/geoip2-golang) - MaxMind GeoLite2 reader
-- Go standard library for all other functionality (networking, TLS, DNS, CLI, JSON, CSV, HTTP)
+- [golang.org/x/net](https://pkg.go.dev/golang.org/x/net) - ICMP echo (`--icmp`)
+- Go standard library for all other functionality (networking, TLS, DNS, CLI, JSON, CSV, HTTP, proxy)
 
 ## Support
 

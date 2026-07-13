@@ -12,11 +12,13 @@ import (
 	"github.com/prodrom3/triton/internal/models"
 )
 
-// QueryDnsRecords queries all DNS record types for a domain concurrently
-// using Go's native DNS resolver.
-func QueryDnsRecords(ctx context.Context, domain string) models.DnsRecords {
+// QueryDnsRecords queries all DNS record types for a domain concurrently using
+// the given resolver (nil selects the system resolver).
+func QueryDnsRecords(ctx context.Context, resolver *net.Resolver, domain string) models.DnsRecords {
 	records := models.DnsRecords{Domain: domain}
-	resolver := net.DefaultResolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex

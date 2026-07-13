@@ -20,10 +20,11 @@ import (
 )
 
 var (
-	// Linux: matches responding hops like "  1  192.168.1.1  1.234 ms" and the
-	// IPv6 equivalent "  1  2001:db8::1  1.234 ms". The address group accepts
-	// hex and colons so IPv6 hops are captured, not silently dropped.
-	linuxHopRe = regexp.MustCompile(`^\s*(\d+)\s+([0-9a-fA-F:.]+)\s+([\d.]+)\s+ms`)
+	// Unix hop lines, e.g. "  1  192.168.1.1  1.234 ms" (GNU/macOS/BSD with -n)
+	// and the IPv6 form "  1  2001:db8::1  1.234 ms". The address group accepts
+	// hex and colons so IPv6 hops are captured. An optional "(host)" segment is
+	// tolerated for busybox and non-numeric variants that print "IP (name)".
+	linuxHopRe = regexp.MustCompile(`^\s*(\d+)\s+([0-9a-fA-F:.]+)(?:\s+\([^)]*\))?\s+([\d.]+)\s+ms`)
 	// Linux: matches timed-out hops like "  2  * * *"
 	linuxTimeoutRe = regexp.MustCompile(`^\s*(\d+)\s+\*`)
 	// Windows: matches responding hops
@@ -148,9 +149,12 @@ func SystemTraceroute(ctx context.Context, target string, maxHops int, timeout t
 	return models.TracerouteResult{Target: target, Success: true, Hops: hops}
 }
 
-// EnrichHopsWithRDNS adds reverse DNS hostnames to traceroute hops concurrently.
-// Skips timed-out hops (IP == "*").
-func EnrichHopsWithRDNS(ctx context.Context, hops []models.TracerouteHop) {
+// EnrichHopsWithRDNS adds reverse DNS hostnames to traceroute hops concurrently
+// using resolver (nil selects the system resolver). Skips timed-out hops.
+func EnrichHopsWithRDNS(ctx context.Context, resolver *net.Resolver, hops []models.TracerouteHop) {
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, 8)
 
@@ -167,7 +171,6 @@ func EnrichHopsWithRDNS(ctx context.Context, hops []models.TracerouteHop) {
 			rdnsCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
 
-			resolver := net.DefaultResolver
 			names, err := resolver.LookupAddr(rdnsCtx, hops[idx].IP)
 			if err != nil || len(names) == 0 {
 				return
@@ -182,15 +185,16 @@ func EnrichHopsWithRDNS(ctx context.Context, hops []models.TracerouteHop) {
 	wg.Wait()
 }
 
-// PerformTraceroute runs a traceroute and enriches hops with reverse DNS.
-func PerformTraceroute(ctx context.Context, target string, maxHops int, timeout time.Duration) models.TracerouteResult {
+// PerformTraceroute runs a traceroute and enriches hops with reverse DNS using
+// the given resolver (nil selects the system resolver).
+func PerformTraceroute(ctx context.Context, resolver *net.Resolver, target string, maxHops int, timeout time.Duration) models.TracerouteResult {
 	result := SystemTraceroute(ctx, target, maxHops, timeout)
 
 	if result.Success && len(result.Hops) > 0 {
 		sort.Slice(result.Hops, func(i, j int) bool {
 			return result.Hops[i].TTL < result.Hops[j].TTL
 		})
-		EnrichHopsWithRDNS(ctx, result.Hops)
+		EnrichHopsWithRDNS(ctx, resolver, result.Hops)
 	}
 
 	return result

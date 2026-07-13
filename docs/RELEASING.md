@@ -21,31 +21,47 @@ strictly newer.
 ## One-time signing setup (recommended)
 
 Signing is what protects users against a tampered release, not just a corrupted
-download. To enable it:
+download. Generate the key yourself in a trusted environment; do not let a third
+party generate your signing key.
 
-1. Generate a keypair locally:
+Order matters: enabling verification (`releasePublicKey`) before a signed
+release exists would make `--update` refuse the current, unsigned "latest"
+release. Follow these steps in order so `--update` never breaks.
+
+1. Generate a keypair locally, writing the private key straight to a file so it
+   never lands in your shell history:
 
    ```
-   go run ./scripts/keygen
+   go run ./scripts/keygen -priv-out release-signing.key
    ```
 
-   This prints a base64 public key and a base64 private key.
+   The public key prints to stdout; the private key is written to
+   `release-signing.key`.
 
-2. Paste the public key into `internal/updater/verify.go`:
+2. Store the private key as a repository secret named `RELEASE_SIGNING_KEY`
+   (Settings -> Secrets and variables -> Actions), then delete the local file:
+
+   ```
+   gh secret set RELEASE_SIGNING_KEY < release-signing.key
+   rm release-signing.key
+   ```
+
+   The release workflow now signs `SHA256SUMS` with `scripts/sign` on every
+   release, producing `SHA256SUMS.sig`. Verification is not yet enforced, so
+   `--update` keeps working.
+
+3. Cut a release (see below). Because the secret is set, this release is signed.
+
+4. Now enforce verification: paste the public key into
+   `internal/updater/verify.go` and commit it.
 
    ```go
    const releasePublicKey = "<base64 public key>"
    ```
 
-   Commit that change. With the key set, the updater requires a valid signature
-   on every update.
-
-3. Store the private key as a repository secret named `RELEASE_SIGNING_KEY`
-   (Settings -> Secrets and variables -> Actions). Keep it out of the repository
-   and out of logs.
-
-The release workflow signs `SHA256SUMS` with `scripts/sign` whenever
-`RELEASE_SIGNING_KEY` is present, producing `SHA256SUMS.sig`.
+   From this point the updater requires a valid signature. Because the latest
+   release (step 3) is already signed, `--update` continues to work, and any
+   tampered or unsigned release is rejected.
 
 ## Without signing
 

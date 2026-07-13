@@ -82,10 +82,10 @@ func FilterByFamily(ips []string, family int) []string {
 	return out
 }
 
-// ResolveDomain resolves a domain name to its IP addresses.
-// The provided context controls cancellation and timeout.
-func ResolveDomain(ctx context.Context, domain string) []string {
-	resolver := net.DefaultResolver
+// ResolveDomain resolves a domain name to its IP addresses using resolver
+// (nil selects the system resolver). The context controls cancellation.
+func ResolveDomain(ctx context.Context, resolver *net.Resolver, domain string) []string {
+	resolver = OrDefaultResolver(resolver)
 	addrs, err := resolver.LookupHost(ctx, domain)
 	if err != nil {
 		return nil
@@ -102,10 +102,10 @@ func ResolveDomain(ctx context.Context, domain string) []string {
 	return unique
 }
 
-// ReverseDNS performs a reverse DNS lookup on an IP address.
-// The provided context controls cancellation and timeout.
-func ReverseDNS(ctx context.Context, ip string) *string {
-	resolver := net.DefaultResolver
+// ReverseDNS performs a reverse DNS lookup on an IP address using resolver
+// (nil selects the system resolver). The context controls cancellation.
+func ReverseDNS(ctx context.Context, resolver *net.Resolver, ip string) *string {
+	resolver = OrDefaultResolver(resolver)
 	names, err := resolver.LookupAddr(ctx, ip)
 	if err != nil || len(names) == 0 {
 		return nil

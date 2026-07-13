@@ -66,7 +66,7 @@ func grabBanner(conn net.Conn, host string, port int, timeout time.Duration) *st
 	_ = conn.SetDeadline(time.Now().Add(bannerTimeout))
 
 	if httpPorts[port] {
-		_, _ = conn.Write([]byte(fmt.Sprintf("HEAD / HTTP/1.0\r\nHost: %s\r\n\r\n", host)))
+		_, _ = fmt.Fprintf(conn, "HEAD / HTTP/1.0\r\nHost: %s\r\n\r\n", host)
 	}
 
 	buf := make([]byte, 1024)
@@ -174,17 +174,37 @@ func TLSCertInfo(ctx context.Context, dialer *network.Dialer, dialIP, sniHost st
 			return models.TlsCertResult{Host: host, Success: false, Error: &errStr}
 		}
 		defer tlsConn2.Close()
-		version := tlsVersionString(tlsConn2.ConnectionState().Version)
-		issuer := "Unverified (self-signed or invalid)"
-		subject := "Unverified"
-		return models.TlsCertResult{
+		state := tlsConn2.ConnectionState()
+		version := tlsVersionString(state.Version)
+		res := models.TlsCertResult{
 			Host:       host,
 			Success:    true,
 			SelfSigned: true,
 			Protocol:   &version,
-			Issuer:     &issuer,
-			Subject:    &subject,
 		}
+		// The certificate is still presented even without verification, so
+		// report its (untrusted) details, including expiry.
+		if len(state.PeerCertificates) > 0 {
+			cert := state.PeerCertificates[0]
+			issuer := cert.Issuer.String()
+			subject := cert.Subject.String()
+			notBefore := cert.NotBefore.Format(time.RFC3339)
+			notAfter := cert.NotAfter.Format(time.RFC3339)
+			days := int(time.Until(cert.NotAfter).Hours() / 24)
+			res.Issuer = &issuer
+			res.Subject = &subject
+			res.NotBefore = &notBefore
+			res.NotAfter = &notAfter
+			res.DaysUntilExpiry = &days
+			res.Expired = time.Now().After(cert.NotAfter)
+			res.SANs = append([]string(nil), cert.DNSNames...)
+		} else {
+			issuer := "Unverified (self-signed or invalid)"
+			subject := "Unverified"
+			res.Issuer = &issuer
+			res.Subject = &subject
+		}
+		return res
 	}
 	defer tlsConn.Close()
 
@@ -201,18 +221,23 @@ func TLSCertInfo(ctx context.Context, dialer *network.Dialer, dialIP, sniHost st
 	notAfter := cert.NotAfter.Format(time.RFC3339)
 	version := tlsVersionString(state.Version)
 
+	// Days until expiry, truncated toward zero. Negative means already expired.
+	days := int(time.Until(cert.NotAfter).Hours() / 24)
+
 	sans := append([]string(nil), cert.DNSNames...)
 
 	return models.TlsCertResult{
-		Host:       host,
-		Success:    true,
-		Issuer:     &issuer,
-		Subject:    &subject,
-		NotBefore:  &notBefore,
-		NotAfter:   &notAfter,
-		SANs:       sans,
-		SelfSigned: false,
-		Protocol:   &version,
+		Host:            host,
+		Success:         true,
+		Issuer:          &issuer,
+		Subject:         &subject,
+		NotBefore:       &notBefore,
+		NotAfter:        &notAfter,
+		DaysUntilExpiry: &days,
+		Expired:         time.Now().After(cert.NotAfter),
+		SANs:            sans,
+		SelfSigned:      false,
+		Protocol:        &version,
 	}
 }
 

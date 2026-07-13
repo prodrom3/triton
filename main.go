@@ -38,39 +38,54 @@ var version = "dev"
 const maxCIDRHosts = 65536
 
 type cliConfig struct {
-	targets      []string
-	db           string
-	asnDB        string
-	maxHops      int
-	timeout      float64
-	workers      int
-	noTraceroute bool
-	whois        bool
-	dnsAll       bool
-	ports        string
-	portsParsed  []int
-	doPorts      bool
-	tls          bool
-	allIPs       bool
-	doHTTP       bool
-	doPing       bool
-	jsonOutput   bool
-	quiet        bool
-	verbose      bool
-	outputFile   string
-	csvFile      string
-	htmlFile     string
-	mapFile      string
-	diffFile     string
-	targetsFile  string
-	configFile   string
-	log          bool
-	proxy        string
-	rate         float64
-	retries      int
-	noPrivate    bool
-	pingPort     int
-	family       int
+	targets        []string
+	db             string
+	asnDB          string
+	maxHops        int
+	timeout        float64
+	workers        int
+	noTraceroute   bool
+	whois          bool
+	dnsAll         bool
+	ports          string
+	portsParsed    []int
+	doPorts        bool
+	tls            bool
+	allIPs         bool
+	doHTTP         bool
+	doPing         bool
+	jsonOutput     bool
+	quiet          bool
+	verbose        bool
+	outputFile     string
+	csvFile        string
+	htmlFile       string
+	mapFile        string
+	diffFile       string
+	targetsFile    string
+	configFile     string
+	log            bool
+	proxy          string
+	rate           float64
+	retries        int
+	noPrivate      bool
+	pingPort       int
+	family         int
+	certExpiryDays int
+	resolver       string
+	userAgent      string
+	headers        headerList
+	jsonl          bool
+	icmp           bool
+}
+
+// headerList collects repeated --header "Key: Value" flags.
+type headerList []string
+
+func (h *headerList) String() string { return strings.Join(*h, ", ") }
+func (h *headerList) Set(v string) error {
+	*h = append(*h, v)
+	return nil
 }
 
 func main() {
@@ -86,6 +101,7 @@ func run() int {
 	}
 
 	renderer := output.NewRenderer(cfg.quiet || cfg.jsonOutput)
+	renderer.CertExpiryDays = cfg.certExpiryDays
 
 	stderrLevel := slog.LevelWarn
 	if cfg.verbose {
@@ -124,8 +140,12 @@ func run() int {
 		DoHTTP:       cfg.doHTTP,
 		DoPing:       cfg.doPing,
 		PingPort:     cfg.pingPort,
+		DoICMP:       cfg.icmp,
 		NoPrivate:    cfg.noPrivate,
 		Family:       cfg.family,
+		UserAgent:    cfg.userAgent,
+		Headers:      cfg.headers,
+		Resolver:     network.NewResolver(cfg.resolver),
 		Dialer:       dialer,
 	}
 
@@ -148,12 +168,31 @@ func run() int {
 	cache := geo.NewCache()
 	whoisLimiter := network.NewRateLimiter(10, 60*time.Second)
 
-	results := runAnalysis(ctx, cfg.targets, geoReader, cache, pipeCfg, renderer, cfg.workers, whoisLimiter)
+	// Retain the full result set unless we are purely streaming JSONL with no
+	// downstream consumer that needs all results at once.
+	retain := !cfg.jsonl || cfg.outputFile != "" || cfg.diffFile != "" ||
+		cfg.csvFile != "" || cfg.htmlFile != "" || cfg.mapFile != ""
+
+	var streamFail atomic.Int32
+	var stream func(models.AnalysisResult)
+	if cfg.jsonl {
+		stream = func(r models.AnalysisResult) {
+			renderer.JSONLine(r)
+			if !retain && r.HasErrors() {
+				streamFail.Add(1)
+			}
+		}
+	}
+
+	results := runAnalysis(ctx, cfg.targets, geoReader, cache, pipeCfg, renderer, cfg.workers, whoisLimiter, stream, retain)
 
 	// Output
-	if cfg.jsonOutput {
+	switch {
+	case cfg.jsonl:
+		// Already streamed one JSON object per line as targets completed.
+	case cfg.jsonOutput:
 		renderer.JSONOutput(results)
-	} else {
+	default:
 		for i, result := range results {
 			renderer.Analysis(result, showDBWarning && i == 0)
 		}
@@ -211,20 +250,30 @@ func run() int {
 	}
 
 	failCount := 0
-	for _, r := range results {
-		if r.HasErrors() {
-			failCount++
+	if retain {
+		for _, r := range results {
+			if r.HasErrors() {
+				failCount++
+			}
 		}
+	} else {
+		failCount = int(streamFail.Load())
 	}
 	elapsed := time.Since(startTime).Round(time.Millisecond)
 	slog.Info("triton finished", "targets", len(results), "failed", failCount, "duration", elapsed)
 
-	if failCount > 0 {
+	// A cancelled (interrupted) run is a failure even in the streaming path,
+	// where cancelled targets are not counted individually.
+	if failCount > 0 || ctx.Err() != nil {
 		return 1
 	}
 	return 0
 }
 
+// runAnalysis analyzes every target concurrently. stream, when non-nil, is
+// invoked with each result as it completes (safe for concurrent use). When
+// retain is true the full slice is returned for exports and summaries; when
+// false (pure streaming) results are not held, bounding memory for large scans.
 func runAnalysis(
 	ctx context.Context,
 	targets []string,
@@ -234,14 +283,24 @@ func runAnalysis(
 	renderer *output.Renderer,
 	workers int,
 	whoisLimiter *network.RateLimiter,
+	stream func(models.AnalysisResult),
+	retain bool,
 ) []models.AnalysisResult {
 	if len(targets) == 1 {
-		return []models.AnalysisResult{
-			pipeline.AnalyzeTarget(ctx, targets[0], geoReader, cfg, cache, whoisLimiter),
+		res := pipeline.AnalyzeTarget(ctx, targets[0], geoReader, cfg, cache, whoisLimiter)
+		if stream != nil {
+			stream(res)
 		}
+		if retain {
+			return []models.AnalysisResult{res}
+		}
+		return nil
 	}
 
-	results := make([]models.AnalysisResult, len(targets))
+	var results []models.AnalysisResult
+	if retain {
+		results = make([]models.AnalysisResult, len(targets))
+	}
 	var completed atomic.Int32
 	total := len(targets)
 
@@ -251,11 +310,14 @@ func runAnalysis(
 	for i, target := range targets {
 		select {
 		case <-ctx.Done():
-			for j := i; j < len(targets); j++ {
-				results[j] = models.AnalysisResult{
-					Target: targets[j], IsIP: false, Error: models.Ptr("Cancelled"),
+			if retain {
+				for j := i; j < len(targets); j++ {
+					results[j] = models.AnalysisResult{
+						Target: targets[j], IsIP: false, Error: models.Ptr("Cancelled"),
+					}
 				}
 			}
+			wg.Wait()
 			return results
 		default:
 		}
@@ -268,14 +330,22 @@ func runAnalysis(
 
 			select {
 			case <-ctx.Done():
-				results[idx] = models.AnalysisResult{
-					Target: t, IsIP: false, Error: models.Ptr("Cancelled"),
+				if retain {
+					results[idx] = models.AnalysisResult{
+						Target: t, IsIP: false, Error: models.Ptr("Cancelled"),
+					}
 				}
 				return
 			default:
 			}
 
-			results[idx] = pipeline.AnalyzeTarget(ctx, t, geoReader, cfg, cache, whoisLimiter)
+			res := pipeline.AnalyzeTarget(ctx, t, geoReader, cfg, cache, whoisLimiter)
+			if stream != nil {
+				stream(res)
+			}
+			if retain {
+				results[idx] = res
+			}
 			c := int(completed.Add(1))
 			renderer.Progress(c, total, t)
 		}(i, target)
@@ -291,6 +361,7 @@ func parseArgs() *cliConfig {
 	showVersion := flag.Bool("version", false, "show version and exit")
 	flag.BoolVar(showVersion, "v", false, "show version and exit")
 	doUpdate := flag.Bool("update", false, "update triton to the latest release")
+	completionShell := flag.String("completion", "", "print a shell completion script (bash, zsh, or fish) and exit")
 
 	flag.StringVar(&cfg.db, "db", "", "path to GeoLite2-City.mmdb (or GEOIP_DB_PATH env var)")
 	flag.StringVar(&cfg.asnDB, "asn-db", "", "path to GeoLite2-ASN.mmdb")
@@ -322,6 +393,12 @@ func parseArgs() *cliConfig {
 	flag.IntVar(&cfg.retries, "retries", 0, "retry probe connections that time out, up to N times")
 	flag.BoolVar(&cfg.noPrivate, "no-private", false, "skip targets that resolve to private, loopback, or link-local addresses")
 	flag.IntVar(&cfg.pingPort, "ping-port", 80, "TCP port used for --ping latency measurement")
+	flag.IntVar(&cfg.certExpiryDays, "cert-expiry-days", 30, "warn when a TLS certificate expires within this many days")
+	flag.StringVar(&cfg.resolver, "resolver", "", "custom DNS resolver host or host:port (default: system resolver)")
+	flag.StringVar(&cfg.userAgent, "user-agent", "", "User-Agent header for HTTP probing")
+	flag.Var(&cfg.headers, "header", "extra HTTP request header 'Key: Value' (repeatable)")
+	flag.BoolVar(&cfg.jsonl, "jsonl", false, "stream one JSON object per target as it completes")
+	flag.BoolVar(&cfg.icmp, "icmp", false, "ICMP echo ping (may require elevated privileges)")
 	ipv4Only := flag.Bool("4", false, "restrict resolution to IPv4 addresses")
 	ipv6Only := flag.Bool("6", false, "restrict resolution to IPv6 addresses")
 
@@ -336,6 +413,14 @@ func parseArgs() *cliConfig {
 
 	if *showVersion {
 		fmt.Printf("triton %s\n", version)
+		os.Exit(0)
+	}
+
+	if *completionShell != "" {
+		if err := writeCompletion(os.Stdout, *completionShell); err != nil {
+			fmt.Fprintln(os.Stderr, "Error:", err)
+			os.Exit(1)
+		}
 		os.Exit(0)
 	}
 
@@ -531,6 +616,15 @@ func applyConfigFile(cfg *cliConfig, setFlags map[string]bool) error {
 	}
 	if unset("ping-port") && cf.PingPort != nil {
 		cfg.pingPort = *cf.PingPort
+	}
+	if unset("cert-expiry-days") && cf.CertExpiryDays != nil {
+		cfg.certExpiryDays = *cf.CertExpiryDays
+	}
+	if unset("resolver") && cf.Resolver != "" {
+		cfg.resolver = cf.Resolver
+	}
+	if unset("user-agent") && cf.UserAgent != "" {
+		cfg.userAgent = cf.UserAgent
 	}
 
 	// Append config file targets (CLI targets take priority by being first)

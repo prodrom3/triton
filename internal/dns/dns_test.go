@@ -15,7 +15,7 @@ func TestQueryDnsRecordsReturnsStruct(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	records := QueryDnsRecords(ctx, "invalid.test.example")
+	records := QueryDnsRecords(ctx, nil, "invalid.test.example")
 	if records.Domain != "invalid.test.example" {
 		t.Errorf("expected domain invalid.test.example, got %s", records.Domain)
 	}
@@ -25,7 +25,7 @@ func TestQueryDnsRecordsCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // Cancel immediately
 
-	records := QueryDnsRecords(ctx, "example.com")
+	records := QueryDnsRecords(ctx, nil, "example.com")
 	if records.Domain != "example.com" {
 		t.Errorf("expected domain example.com, got %s", records.Domain)
 	}
