@@ -8,3 +8,8 @@ name: "triton CodeQL config"
 query-filters:
   - exclude:
       id: go/disabled-certificate-check
+  # go/insecure-tls fires on the TLS posture probe, which deliberately offers all
+  # cipher suites (including legacy ones) and skips verification to discover which
+  # protocols and ciphers a server accepts. This is the point of the feature.
+  - exclude:
+      id: go/insecure-tls

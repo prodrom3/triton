@@ -7,6 +7,7 @@ import (
 	"net"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -22,6 +23,9 @@ func TestEndToEndScan(t *testing.T) {
 
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "triton")
+	if runtime.GOOS == "windows" {
+		bin += ".exe"
+	}
 	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
 		t.Fatalf("build failed: %v\n%s", err, out)
 	}
