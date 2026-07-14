@@ -59,6 +59,7 @@ In Greek mythology, Triton is the messenger of the sea, a god who could calm or 
 **Surface inspection**
 - TCP connect port scan (IPv4 and IPv6), banner grabbing, 16 concurrent workers
 - TLS certificate inspection: issuer, subject, SANs, expiry, self-signed detection, protocol version, TLS 1.2 minimum pinned on all clients
+- TLS posture: accepted protocol versions, weak-protocol and weak-cipher flags, and a summary A/B/C/F grade
 - HTTP probing: status codes, redirect chains, server fingerprint, page title, light technology detection, custom User-Agent and headers, and a security header audit (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy)
 - TLS certificate expiry reporting with a configurable warning threshold
 - TCP and ICMP ping latency (min / avg / max) with packet-loss statistics
@@ -184,6 +185,7 @@ triton --targets hosts.txt [OPTIONS]
 | `--ping-port N` | TCP port used for `--ping` (default: 80) |
 | `--icmp` | ICMP echo ping (may require elevated privileges) |
 | `--cert-expiry-days N` | Warn when a TLS certificate expires within N days (default: 30) |
+| `--fail-on LIST` | Exit non-zero on any of `error,cert-expiry,weak-tls,open-ports,changed` |
 | `--user-agent STR` | User-Agent header for HTTP probing |
 | `--header 'K: V'` | Extra HTTP request header (repeatable) |
 | `--resolver HOST` | Custom DNS resolver host or host:port |
@@ -308,6 +310,7 @@ The current working directory is intentionally not searched for a config file: a
   "cert_expiry_days": 30,
   "resolver": "1.1.1.1",
   "user_agent": "triton/recon",
+  "fail_on": "cert-expiry,weak-tls",
   "log": false
 }
 ```

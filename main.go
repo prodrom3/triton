@@ -77,6 +77,7 @@ type cliConfig struct {
 	headers        headerList
 	jsonl          bool
 	icmp           bool
+	failOn         string
 }
 
 // headerList collects repeated --header "Key: Value" flags.
@@ -171,7 +172,7 @@ func run() int {
 	// Retain the full result set unless we are purely streaming JSONL with no
 	// downstream consumer that needs all results at once.
 	retain := !cfg.jsonl || cfg.outputFile != "" || cfg.diffFile != "" ||
-		cfg.csvFile != "" || cfg.htmlFile != "" || cfg.mapFile != ""
+		cfg.csvFile != "" || cfg.htmlFile != "" || cfg.mapFile != "" || cfg.failOn != ""
 
 	var streamFail atomic.Int32
 	var stream func(models.AnalysisResult)
@@ -212,6 +213,7 @@ func run() int {
 	}
 
 	// Diff
+	diffChanged := false
 	if cfg.diffFile != "" {
 		previous, err := diff.LoadPrevious(cfg.diffFile)
 		if err != nil {
@@ -222,6 +224,7 @@ func run() int {
 				currentDicts = append(currentDicts, r.ToDict())
 			}
 			changes := diff.DiffResults(currentDicts, previous)
+			diffChanged = len(changes) > 0
 			renderer.DiffChanges(changes)
 		}
 	}
@@ -262,9 +265,23 @@ func run() int {
 	elapsed := time.Since(startTime).Round(time.Millisecond)
 	slog.Info("triton finished", "targets", len(results), "failed", failCount, "duration", elapsed)
 
-	// A cancelled (interrupted) run is a failure even in the streaming path,
-	// where cancelled targets are not counted individually.
-	if failCount > 0 || ctx.Err() != nil {
+	// A cancelled (interrupted) run is always a failure.
+	if ctx.Err() != nil {
+		return 1
+	}
+
+	// --fail-on lets the user define exactly what constitutes failure; it
+	// overrides the default error-based exit code.
+	if cfg.failOn != "" {
+		conds, _ := parseFailOn(cfg.failOn) // validated during parseArgs
+		if triggered, reason := failOnTriggered(conds, results, cfg.certExpiryDays, diffChanged); triggered {
+			slog.Warn("fail-on condition met", "reason", reason)
+			return 1
+		}
+		return 0
+	}
+
+	if failCount > 0 {
 		return 1
 	}
 	return 0
@@ -399,6 +416,7 @@ func parseArgs() *cliConfig {
 	flag.Var(&cfg.headers, "header", "extra HTTP request header 'Key: Value' (repeatable)")
 	flag.BoolVar(&cfg.jsonl, "jsonl", false, "stream one JSON object per target as it completes")
 	flag.BoolVar(&cfg.icmp, "icmp", false, "ICMP echo ping (may require elevated privileges)")
+	flag.StringVar(&cfg.failOn, "fail-on", "", "exit non-zero on any of: error,cert-expiry,weak-tls,open-ports,changed (comma-separated)")
 	ipv4Only := flag.Bool("4", false, "restrict resolution to IPv4 addresses")
 	ipv6Only := flag.Bool("6", false, "restrict resolution to IPv6 addresses")
 
@@ -527,6 +545,27 @@ func parseArgs() *cliConfig {
 			return nil
 		}
 	}
+	if cfg.failOn != "" {
+		conds, err := parseFailOn(cfg.failOn)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return nil
+		}
+		// Reject conditions that can never fire without their prerequisite probe,
+		// so a misconfigured CI gate is not a silent always-pass.
+		if conds["changed"] && cfg.diffFile == "" {
+			fmt.Fprintln(os.Stderr, "Error: --fail-on=changed requires --diff")
+			return nil
+		}
+		if (conds["weak-tls"] || conds["cert-expiry"]) && !cfg.tls {
+			fmt.Fprintln(os.Stderr, "Error: --fail-on=weak-tls/cert-expiry requires --tls")
+			return nil
+		}
+		if conds["open-ports"] && !cfg.doPorts {
+			fmt.Fprintln(os.Stderr, "Error: --fail-on=open-ports requires --ports")
+			return nil
+		}
+	}
 
 	return cfg
 }
@@ -626,6 +665,9 @@ func applyConfigFile(cfg *cliConfig, setFlags map[string]bool) error {
 	if unset("user-agent") && cf.UserAgent != "" {
 		cfg.userAgent = cf.UserAgent
 	}
+	if unset("fail-on") && cf.FailOn != "" {
+		cfg.failOn = cf.FailOn
+	}
 
 	// Append config file targets (CLI targets take priority by being first)
 	if len(cf.Targets) > 0 {
@@ -650,6 +692,53 @@ func readTargetsFile(path string) ([]string, error) {
 		}
 	}
 	return targets, scanner.Err()
+}
+
+var validFailOnConditions = map[string]bool{
+	"error": true, "cert-expiry": true, "weak-tls": true,
+	"open-ports": true, "changed": true,
+}
+
+// parseFailOn splits a comma-separated --fail-on value into a validated set.
+func parseFailOn(s string) (map[string]bool, error) {
+	set := map[string]bool{}
+	for _, part := range strings.Split(s, ",") {
+		c := strings.TrimSpace(part)
+		if c == "" {
+			continue
+		}
+		if !validFailOnConditions[c] {
+			return nil, fmt.Errorf("unknown --fail-on condition %q (valid: error,cert-expiry,weak-tls,open-ports,changed)", c)
+		}
+		set[c] = true
+	}
+	return set, nil
+}
+
+// failOnTriggered reports whether any requested condition is met, with a reason.
+func failOnTriggered(conds map[string]bool, results []models.AnalysisResult, certExpiryDays int, diffChanged bool) (bool, string) {
+	if conds["changed"] && diffChanged {
+		return true, "changes detected since the previous scan"
+	}
+	for _, r := range results {
+		if conds["error"] && r.HasErrors() {
+			return true, "target " + r.Target + " has errors"
+		}
+		if conds["open-ports"] && len(r.Ports) > 0 {
+			return true, "target " + r.Target + " has open ports"
+		}
+		if conds["cert-expiry"] && r.TLS != nil && r.TLS.Success {
+			if r.TLS.Expired || (r.TLS.DaysUntilExpiry != nil && *r.TLS.DaysUntilExpiry <= certExpiryDays) {
+				return true, "target " + r.Target + " has an expiring or expired certificate"
+			}
+		}
+		if conds["weak-tls"] && r.TLS != nil && r.TLS.Success {
+			if r.TLS.WeakCipher || len(r.TLS.WeakProtocols) > 0 || r.TLS.Grade == "C" || r.TLS.Grade == "F" {
+				return true, "target " + r.Target + " has a weak TLS configuration"
+			}
+		}
+	}
+	return false, ""
 }
 
 func parsePorts(s string) ([]int, error) {

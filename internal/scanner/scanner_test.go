@@ -263,6 +263,12 @@ func TestTLSCertInfoSelfSigned(t *testing.T) {
 	if result.DaysUntilExpiry == nil {
 		t.Error("expected DaysUntilExpiry from the self-signed cert")
 	}
+	if len(result.AcceptedProtocols) == 0 {
+		t.Error("expected accepted TLS protocols from posture probe")
+	}
+	if result.Grade == "" {
+		t.Error("expected a TLS grade")
+	}
 }
 
 func TestTLSCertInfoConnectionRefused(t *testing.T) {

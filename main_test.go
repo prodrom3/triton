@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"testing"
+
+	"github.com/prodrom3/triton/internal/models"
 )
 
 func TestParsePorts(t *testing.T) {
@@ -184,5 +186,61 @@ func TestApplyConfigPrecedence(t *testing.T) {
 	}
 	if !cfg.noTraceroute {
 		t.Errorf("config no_traceroute must apply when flag unset")
+	}
+}
+
+func TestParseFailOn(t *testing.T) {
+	got, err := parseFailOn("cert-expiry, open-ports ,changed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []string{"cert-expiry", "open-ports", "changed"} {
+		if !got[c] {
+			t.Errorf("condition %q missing from parsed set", c)
+		}
+	}
+	if _, err := parseFailOn("nonsense"); err == nil {
+		t.Error("expected error for unknown condition")
+	}
+	if s, err := parseFailOn(""); err != nil || len(s) != 0 {
+		t.Errorf("empty fail-on should be empty set: %v %v", s, err)
+	}
+}
+
+func TestFailOnTriggered(t *testing.T) {
+	expired := models.AnalysisResult{
+		Target: "a", TLS: &models.TlsCertResult{Success: true, Expired: true},
+	}
+	weak := models.AnalysisResult{
+		Target: "b", TLS: &models.TlsCertResult{Success: true, Grade: "F",
+			WeakProtocols: []string{"TLSv1.0"}},
+	}
+	openPorts := models.AnalysisResult{
+		Target: "c", Ports: []models.PortResult{{Port: 80, Open: true}},
+	}
+	clean := models.AnalysisResult{
+		Target: "d", IsIP: true, TLS: &models.TlsCertResult{Success: true, Grade: "A"},
+	}
+
+	tests := []struct {
+		name    string
+		conds   string
+		results []models.AnalysisResult
+		changed bool
+		want    bool
+	}{
+		{"cert-expiry hit", "cert-expiry", []models.AnalysisResult{expired}, false, true},
+		{"weak-tls hit", "weak-tls", []models.AnalysisResult{weak}, false, true},
+		{"open-ports hit", "open-ports", []models.AnalysisResult{openPorts}, false, true},
+		{"changed hit", "changed", []models.AnalysisResult{clean}, true, true},
+		{"no match", "cert-expiry,weak-tls,open-ports", []models.AnalysisResult{clean}, false, false},
+		{"changed but not requested", "open-ports", []models.AnalysisResult{clean}, true, false},
+	}
+	for _, tc := range tests {
+		conds, _ := parseFailOn(tc.conds)
+		got, _ := failOnTriggered(conds, tc.results, 30, tc.changed)
+		if got != tc.want {
+			t.Errorf("%s: failOnTriggered = %v want %v", tc.name, got, tc.want)
+		}
 	}
 }

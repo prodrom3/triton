@@ -6,6 +6,7 @@ package scanner
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"sort"
@@ -165,80 +166,91 @@ func TLSCertInfo(ctx context.Context, dialer *network.Dialer, dialIP, sniHost st
 	host := sniHost
 	addr := net.JoinHostPort(dialIP, fmt.Sprintf("%d", port))
 
-	tlsConn, err := tlsHandshake(ctx, dialer, addr, host, timeout, false)
-	if err != nil {
-		// Fallback without verification for self-signed/invalid certs (intentional for recon)
-		tlsConn2, err2 := tlsHandshake(ctx, dialer, addr, host, timeout, true)
-		if err2 != nil {
-			errStr := err2.Error()
-			return models.TlsCertResult{Host: host, Success: false, Error: &errStr}
+	// A verified handshake (min TLS 1.2) determines whether the certificate is
+	// trusted and provides the primary certificate and version.
+	var verifiedCert *x509.Certificate
+	var verifiedVersion string
+	verified := false
+	if conn, err := tlsHandshake(ctx, dialer, addr, host, timeout, false); err == nil {
+		st := conn.ConnectionState()
+		verified = true
+		verifiedVersion = tlsVersionString(st.Version)
+		if len(st.PeerCertificates) > 0 {
+			verifiedCert = st.PeerCertificates[0]
 		}
-		defer tlsConn2.Close()
-		state := tlsConn2.ConnectionState()
-		version := tlsVersionString(state.Version)
-		res := models.TlsCertResult{
-			Host:       host,
-			Success:    true,
-			SelfSigned: true,
-			Protocol:   &version,
-		}
-		// The certificate is still presented even without verification, so
-		// report its (untrusted) details, including expiry.
-		if len(state.PeerCertificates) > 0 {
-			cert := state.PeerCertificates[0]
-			issuer := cert.Issuer.String()
-			subject := cert.Subject.String()
-			notBefore := cert.NotBefore.Format(time.RFC3339)
-			notAfter := cert.NotAfter.Format(time.RFC3339)
-			days := int(time.Until(cert.NotAfter).Hours() / 24)
-			res.Issuer = &issuer
-			res.Subject = &subject
-			res.NotBefore = &notBefore
-			res.NotAfter = &notAfter
-			res.DaysUntilExpiry = &days
-			res.Expired = time.Now().After(cert.NotAfter)
-			res.SANs = append([]string(nil), cert.DNSNames...)
-		} else {
-			issuer := "Unverified (self-signed or invalid)"
-			subject := "Unverified"
-			res.Issuer = &issuer
-			res.Subject = &subject
-		}
-		return res
+		conn.Close()
 	}
-	defer tlsConn.Close()
 
-	state := tlsConn.ConnectionState()
-	if len(state.PeerCertificates) == 0 {
-		errStr := "no peer certificates"
+	// Posture probe: which versions are accepted, the negotiated TLS 1.2 cipher,
+	// and an (untrusted) certificate. This runs independently of the verified
+	// handshake so legacy-only (TLS 1.0/1.1) servers are still assessed.
+	accepted, cipher, probeCert := probeTLSVersions(ctx, dialer, addr, host, timeout)
+
+	// Merge the proven verified version so a healthy host is never reported with
+	// no accepted protocols if the posture re-probes were interrupted.
+	set := map[string]bool{}
+	for _, v := range accepted {
+		set[v] = true
+	}
+	if verifiedVersion != "" {
+		set[verifiedVersion] = true
+	}
+	accepted = orderedVersions(set)
+
+	if len(accepted) == 0 {
+		errStr := "TLS handshake failed for all supported versions"
 		return models.TlsCertResult{Host: host, Success: false, Error: &errStr}
 	}
 
-	cert := state.PeerCertificates[0]
-	issuer := cert.Issuer.String()
-	subject := cert.Subject.String()
-	notBefore := cert.NotBefore.Format(time.RFC3339)
-	notAfter := cert.NotAfter.Format(time.RFC3339)
-	version := tlsVersionString(state.Version)
-
-	// Days until expiry, truncated toward zero. Negative means already expired.
-	days := int(time.Until(cert.NotAfter).Hours() / 24)
-
-	sans := append([]string(nil), cert.DNSNames...)
-
-	return models.TlsCertResult{
-		Host:            host,
-		Success:         true,
-		Issuer:          &issuer,
-		Subject:         &subject,
-		NotBefore:       &notBefore,
-		NotAfter:        &notAfter,
-		DaysUntilExpiry: &days,
-		Expired:         time.Now().After(cert.NotAfter),
-		SANs:            sans,
-		SelfSigned:      false,
-		Protocol:        &version,
+	res := models.TlsCertResult{
+		Host:              host,
+		Success:           true,
+		SelfSigned:        !verified,
+		AcceptedProtocols: accepted,
 	}
+	for _, p := range accepted {
+		if p == "TLSv1.0" || p == "TLSv1.1" {
+			res.WeakProtocols = append(res.WeakProtocols, p)
+		}
+	}
+	highest := accepted[len(accepted)-1]
+	res.Protocol = &highest
+
+	// Grade on the negotiated cipher: with all cipher suites offered, the server
+	// picks its preferred one, so a server that only supports (or prefers) a weak
+	// cipher reveals it, while a strong server that merely tolerates a legacy
+	// cipher for old clients is not penalized.
+	if cipher != "" {
+		res.CipherSuite = &cipher
+		res.WeakCipher = isWeakCipher(cipher)
+	}
+
+	cert := verifiedCert
+	if cert == nil {
+		cert = probeCert
+	}
+	if cert != nil {
+		issuer := cert.Issuer.String()
+		subject := cert.Subject.String()
+		notBefore := cert.NotBefore.Format(time.RFC3339)
+		notAfter := cert.NotAfter.Format(time.RFC3339)
+		days := int(time.Until(cert.NotAfter).Hours() / 24)
+		res.Issuer = &issuer
+		res.Subject = &subject
+		res.NotBefore = &notBefore
+		res.NotAfter = &notAfter
+		res.DaysUntilExpiry = &days
+		res.Expired = time.Now().After(cert.NotAfter)
+		res.SANs = append([]string(nil), cert.DNSNames...)
+	} else {
+		issuer := "Unverified (self-signed or invalid)"
+		subject := "Unverified"
+		res.Issuer = &issuer
+		res.Subject = &subject
+	}
+
+	res.Grade = tlsGrade(accepted, res.WeakCipher, res.Expired)
+	return res
 }
 
 func tlsVersionString(v uint16) string {

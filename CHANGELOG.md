@@ -6,6 +6,12 @@ Keep a Changelog, and the project aims to follow semantic versioning.
 ## [Unreleased]
 
 ### Added
+- TLS posture: enumerates accepted protocol versions, flags weak protocols and
+  ciphers, and reports a summary A/B/C/F grade.
+- `--fail-on` for CI gating: exit non-zero on `error`, `cert-expiry`,
+  `weak-tls`, `open-ports`, or `changed`.
+- A nightly fuzzing workflow that runs the parser fuzz targets, and an
+  end-to-end test that drives the built binary.
 - TLS certificate expiry reporting: `days_until_expiry`, an `expired` flag, and
   a `--cert-expiry-days` threshold that highlights certificates nearing expiry.
 - HTTP probe enrichment: page title extraction, a light technology fingerprint,
