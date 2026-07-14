@@ -1,0 +1,43 @@
+name: Fuzz
+
+on:
+  schedule:
+    - cron: "13 3 * * *" # nightly
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: .
+            fn: FuzzParsePorts
+          - pkg: ./internal/tracer
+            fn: FuzzParseSystemOutput
+          - pkg: ./internal/diff
+            fn: FuzzParsePrevious
+          - pkg: ./internal/network
+            fn: FuzzSanitizeWhoisQuery
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Set up Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "stable"
+
+      - name: Fuzz ${{ matrix.fn }}
+        run: go test ${{ matrix.pkg }} -run '^$' -fuzz '^${{ matrix.fn }}$' -fuzztime 3m
+
+      - name: Upload crashers
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fuzz-crashers-${{ matrix.fn }}
+          path: ${{ matrix.pkg }}/testdata/fuzz
+          if-no-files-found: ignore

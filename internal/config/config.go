@@ -37,6 +37,7 @@ type File struct {
 	CertExpiryDays *int     `json:"cert_expiry_days,omitempty"`
 	Resolver       string   `json:"resolver,omitempty"`
 	UserAgent      string   `json:"user_agent,omitempty"`
+	FailOn         string   `json:"fail_on,omitempty"`
 	Targets        []string `json:"targets,omitempty"`
 }
 

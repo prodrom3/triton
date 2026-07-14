@@ -290,6 +290,30 @@ func (r *Renderer) TLSCert(t *models.TlsCertResult) {
 	if t.Protocol != nil {
 		fmt.Fprintf(r.Out, "    Protocol:   %s\n", *t.Protocol)
 	}
+	if len(t.AcceptedProtocols) > 0 {
+		line := strings.Join(t.AcceptedProtocols, ", ")
+		if len(t.WeakProtocols) > 0 {
+			line += r.c(fmt.Sprintf("  (weak: %s)", strings.Join(t.WeakProtocols, ", ")), yellow)
+		}
+		fmt.Fprintf(r.Out, "    Accepts:    %s\n", line)
+	}
+	if t.CipherSuite != nil {
+		line := clean(*t.CipherSuite)
+		if t.WeakCipher {
+			line += r.c("  (weak)", yellow)
+		}
+		fmt.Fprintf(r.Out, "    Cipher:     %s\n", line)
+	}
+	if t.Grade != "" {
+		color := green
+		switch t.Grade {
+		case "F":
+			color = red
+		case "B", "C":
+			color = yellow
+		}
+		fmt.Fprintf(r.Out, "    Grade:      %s\n", r.c(t.Grade, color))
+	}
 }
 
 // HTTPProbe prints HTTP probe results.

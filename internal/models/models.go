@@ -65,18 +65,23 @@ type PortResult struct {
 
 // TlsCertResult holds TLS certificate information.
 type TlsCertResult struct {
-	Host            string   `json:"host"`
-	Success         bool     `json:"success"`
-	Issuer          *string  `json:"issuer,omitempty"`
-	Subject         *string  `json:"subject,omitempty"`
-	NotBefore       *string  `json:"not_before,omitempty"`
-	NotAfter        *string  `json:"not_after,omitempty"`
-	DaysUntilExpiry *int     `json:"days_until_expiry,omitempty"`
-	Expired         bool     `json:"expired,omitempty"`
-	SANs            []string `json:"sans,omitempty"`
-	SelfSigned      bool     `json:"self_signed,omitempty"`
-	Protocol        *string  `json:"protocol,omitempty"`
-	Error           *string  `json:"error,omitempty"`
+	Host              string   `json:"host"`
+	Success           bool     `json:"success"`
+	Issuer            *string  `json:"issuer,omitempty"`
+	Subject           *string  `json:"subject,omitempty"`
+	NotBefore         *string  `json:"not_before,omitempty"`
+	NotAfter          *string  `json:"not_after,omitempty"`
+	DaysUntilExpiry   *int     `json:"days_until_expiry,omitempty"`
+	Expired           bool     `json:"expired,omitempty"`
+	SANs              []string `json:"sans,omitempty"`
+	SelfSigned        bool     `json:"self_signed,omitempty"`
+	Protocol          *string  `json:"protocol,omitempty"`
+	AcceptedProtocols []string `json:"accepted_protocols,omitempty"`
+	WeakProtocols     []string `json:"weak_protocols,omitempty"`
+	CipherSuite       *string  `json:"cipher_suite,omitempty"`
+	WeakCipher        bool     `json:"weak_cipher,omitempty"`
+	Grade             string   `json:"grade,omitempty"`
+	Error             *string  `json:"error,omitempty"`
 }
 
 // HTTPProbeResult holds HTTP response metadata for a probed URL.
